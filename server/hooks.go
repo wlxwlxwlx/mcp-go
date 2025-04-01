@@ -6,6 +6,8 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
+type OnConnectSSEFunc func(header map[string]string) error
+
 // BeforeAnyHookFunc is a function that is called after the request is
 // parsed but before the method is called.
 type BeforeAnyHookFunc func(id any, method mcp.MCPMethod, message any)
@@ -77,6 +79,7 @@ type OnBeforeCallToolFunc func(id any, message *mcp.CallToolRequest)
 type OnAfterCallToolFunc func(id any, message *mcp.CallToolRequest, result *mcp.CallToolResult)
 
 type Hooks struct {
+	OnConnectSSE                  []OnConnectSSEFunc
 	OnBeforeAny                   []BeforeAnyHookFunc
 	OnSuccess                     []OnSuccessHookFunc
 	OnError                       []OnErrorHookFunc
@@ -153,6 +156,21 @@ func (c *Hooks) AddOnSuccess(hook OnSuccessHookFunc) {
 //
 // server := NewMCPServer("test-server", "1.0.0", WithHooks(hooks))
 // ```
+func (c *Hooks) AddOnConnectSSE(hook OnConnectSSEFunc) {
+	c.OnConnectSSE = append(c.OnConnectSSE, hook)
+}
+func (c *Hooks) onConnectSSE(header map[string]string) error {
+	if c == nil {
+		return nil
+	}
+	for _, hook := range c.OnConnectSSE {
+		err := hook(header)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
 func (c *Hooks) AddOnError(hook OnErrorHookFunc) {
 	c.OnError = append(c.OnError, hook)
 }
