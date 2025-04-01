@@ -3,7 +3,7 @@
 package server
 
 import (
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/wlxwlxwlx/mcp-go/mcp"
 )
 
 type OnConnectSSEFunc func(header map[string]string) error

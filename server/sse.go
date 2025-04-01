@@ -12,7 +12,7 @@ import (
 	"sync/atomic"
 
 	"github.com/google/uuid"
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/wlxwlxwlx/mcp-go/mcp"
 )
 
 // sseSession represents an active SSE connection.
