@@ -1374,8 +1374,8 @@ func TestMCPServer_WithRecover(t *testing.T) {
 		mcp.NewTool("panic-tool"),
 		panicToolHandler,
 	)
-
-	response := server.HandleMessage(context.Background(), []byte(`{
+	header := map[string]string{"Authorization": "Bearer test"}
+	response := server.HandleMessage(context.Background(), header, []byte(`{
 		"jsonrpc": "2.0",
 		"id": 4,
 		"method": "tools/call",
