@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wlxwlxwlx/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/mcp"
 )
 
 func compileTestServer(outputPath string) error {

@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/wlxwlxwlx/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/mcp"
 )
 
 // sseSession represents an active SSE connection.

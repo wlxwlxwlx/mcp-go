@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/wlxwlxwlx/mcp-go/mcp"
 )
 
 func TestMCPServer_NewMCPServer(t *testing.T) {

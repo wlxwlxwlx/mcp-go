@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wlxwlxwlx/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/mcp"
 )
 
 func TestSSEServer(t *testing.T) {

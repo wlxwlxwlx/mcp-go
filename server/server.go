@@ -11,7 +11,7 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/wlxwlxwlx/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/mcp"
 )
 
 // resourceEntry holds both a resource and its handler
