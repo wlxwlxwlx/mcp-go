@@ -4,6 +4,7 @@ package server
 
 import (
 	"context"
+
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
@@ -158,7 +159,6 @@ func (c *Hooks) AddOnSuccess(hook OnSuccessHookFunc) {
 //
 // server := NewMCPServer("test-server", "1.0.0", WithHooks(hooks))
 // ```
-
 func (c *Hooks) AddOnError(hook OnErrorHookFunc) {
 	c.OnError = append(c.OnError, hook)
 }
@@ -207,6 +207,7 @@ func (c *Hooks) onError(ctx context.Context, id any, method mcp.MCPMethod, messa
 func (c *Hooks) AddOnRegisterSession(hook OnRegisterSessionHookFunc) {
 	c.OnRegisterSession = append(c.OnRegisterSession, hook)
 }
+
 func (c *Hooks) RegisterSession(ctx context.Context, session ClientSession) {
 	if c == nil {
 		return

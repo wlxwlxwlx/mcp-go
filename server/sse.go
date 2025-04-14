@@ -221,15 +221,7 @@ func (s *SSEServer) handleSSE(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	header := make(map[string]string)
-	for k, v := range r.Header {
-		header[k] = v[0]
-	}
-	err := s.server.hooks.onConnectSSE(header)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("connect SSE failed: %v", err), http.StatusInternalServerError)
-		return
-	}
+
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
