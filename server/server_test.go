@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -178,7 +179,7 @@ func TestMCPServer_Tools(t *testing.T) {
 		{
 			name: "SetTools sends single notifications/tools/list_changed with one active session",
 			action: func(t *testing.T, server *MCPServer, notificationChannel chan mcp.JSONRPCNotification) {
-				err := server.RegisterSession(&fakeSession{
+				err := server.RegisterSession(context.TODO(), &fakeSession{
 					sessionID:           "test",
 					notificationChannel: notificationChannel,
 					initialized:         true,
@@ -209,7 +210,7 @@ func TestMCPServer_Tools(t *testing.T) {
 			name: "SetTools sends single notifications/tools/list_changed per each active session",
 			action: func(t *testing.T, server *MCPServer, notificationChannel chan mcp.JSONRPCNotification) {
 				for i := range 5 {
-					err := server.RegisterSession(&fakeSession{
+					err := server.RegisterSession(context.TODO(), &fakeSession{
 						sessionID:           fmt.Sprintf("test%d", i),
 						notificationChannel: notificationChannel,
 						initialized:         true,
@@ -218,7 +219,7 @@ func TestMCPServer_Tools(t *testing.T) {
 				}
 				// also let's register inactive sessions
 				for i := range 5 {
-					err := server.RegisterSession(&fakeSession{
+					err := server.RegisterSession(context.TODO(), &fakeSession{
 						sessionID:           fmt.Sprintf("test%d", i+5),
 						notificationChannel: notificationChannel,
 						initialized:         false,
@@ -251,7 +252,7 @@ func TestMCPServer_Tools(t *testing.T) {
 		{
 			name: "AddTool sends multiple notifications/tools/list_changed",
 			action: func(t *testing.T, server *MCPServer, notificationChannel chan mcp.JSONRPCNotification) {
-				err := server.RegisterSession(&fakeSession{
+				err := server.RegisterSession(context.TODO(), &fakeSession{
 					sessionID:           "test",
 					notificationChannel: notificationChannel,
 					initialized:         true,
@@ -279,7 +280,7 @@ func TestMCPServer_Tools(t *testing.T) {
 		{
 			name: "DeleteTools sends single notifications/tools/list_changed",
 			action: func(t *testing.T, server *MCPServer, notificationChannel chan mcp.JSONRPCNotification) {
-				err := server.RegisterSession(&fakeSession{
+				err := server.RegisterSession(context.TODO(), &fakeSession{
 					sessionID:           "test",
 					notificationChannel: notificationChannel,
 					initialized:         true,
@@ -431,7 +432,7 @@ func TestMCPServer_HandleValidMessages(t *testing.T) {
 
 func TestMCPServer_HandlePagination(t *testing.T) {
 	server := createTestServer()
-
+	cursor := base64.StdEncoding.EncodeToString([]byte("My Resource"))
 	tests := []struct {
 		name     string
 		message  string
@@ -439,14 +440,14 @@ func TestMCPServer_HandlePagination(t *testing.T) {
 	}{
 		{
 			name: "List resources with cursor",
-			message: `{
+			message: fmt.Sprintf(`{
                     "jsonrpc": "2.0",
                     "id": 1,
                     "method": "resources/list",
                     "params": {
-                        "cursor": "test-cursor"
+                        "cursor": "%s"
                     }
-                }`,
+                }`, cursor),
 			validate: func(t *testing.T, response mcp.JSONRPCMessage) {
 				resp, ok := response.(mcp.JSONRPCResponse)
 				assert.True(t, ok)
@@ -703,7 +704,7 @@ func TestMCPServer_PromptHandling(t *testing.T) {
 func TestMCPServer_HandleInvalidMessages(t *testing.T) {
 	var errs []error
 	hooks := &Hooks{}
-	hooks.AddOnError(func(id any, method mcp.MCPMethod, message any, err error) {
+	hooks.AddOnError(func(ctx context.Context, id any, method mcp.MCPMethod, message any, err error) {
 		errs = append(errs, err)
 	})
 
@@ -781,13 +782,13 @@ func TestMCPServer_HandleUndefinedHandlers(t *testing.T) {
 	var beforeResults []beforeResult
 	var afterResults []afterResult
 	hooks := &Hooks{}
-	hooks.AddOnError(func(id any, method mcp.MCPMethod, message any, err error) {
+	hooks.AddOnError(func(ctx context.Context, id any, method mcp.MCPMethod, message any, err error) {
 		errs = append(errs, err)
 	})
-	hooks.AddBeforeAny(func(id any, method mcp.MCPMethod, message any) {
+	hooks.AddBeforeAny(func(ctx context.Context, id any, method mcp.MCPMethod, message any) {
 		beforeResults = append(beforeResults, beforeResult{method, message})
 	})
-	hooks.AddOnSuccess(func(id any, method mcp.MCPMethod, message any, result any) {
+	hooks.AddOnSuccess(func(ctx context.Context, id any, method mcp.MCPMethod, message any, result any) {
 		afterResults = append(afterResults, afterResult{method, message, result})
 	})
 
@@ -897,7 +898,7 @@ func TestMCPServer_HandleUndefinedHandlers(t *testing.T) {
 func TestMCPServer_HandleMethodsWithoutCapabilities(t *testing.T) {
 	var errs []error
 	hooks := &Hooks{}
-	hooks.AddOnError(func(id any, method mcp.MCPMethod, message any, err error) {
+	hooks.AddOnError(func(ctx context.Context, id any, method mcp.MCPMethod, message any, err error) {
 		errs = append(errs, err)
 	})
 	hooksOption := WithHooks(hooks)
@@ -1138,6 +1139,7 @@ func createTestServer() *MCPServer {
 	server := NewMCPServer("test-server", "1.0.0",
 		WithResourceCapabilities(true, true),
 		WithPromptCapabilities(true),
+		WithPaginationLimit(2),
 	)
 
 	server.AddResource(
@@ -1227,7 +1229,7 @@ func TestMCPServer_WithHooks(t *testing.T) {
 	hooks := &Hooks{}
 
 	// Register "any" hooks with type verification
-	hooks.AddBeforeAny(func(id any, method mcp.MCPMethod, message any) {
+	hooks.AddBeforeAny(func(ctx context.Context, id any, method mcp.MCPMethod, message any) {
 		beforeAnyCount++
 		// Only collect ping messages for our test
 		if method == mcp.MethodPing {
@@ -1235,7 +1237,7 @@ func TestMCPServer_WithHooks(t *testing.T) {
 		}
 	})
 
-	hooks.AddOnSuccess(func(id any, method mcp.MCPMethod, message any, result any) {
+	hooks.AddOnSuccess(func(ctx context.Context, id any, method mcp.MCPMethod, message any, result any) {
 		onSuccessCount++
 		// Only collect ping responses for our test
 		if method == mcp.MethodPing {
@@ -1246,17 +1248,17 @@ func TestMCPServer_WithHooks(t *testing.T) {
 		}
 	})
 
-	hooks.AddOnError(func(id any, method mcp.MCPMethod, message any, err error) {
+	hooks.AddOnError(func(ctx context.Context, id any, method mcp.MCPMethod, message any, err error) {
 		onErrorCount++
 	})
 
 	// Register method-specific hooks with type verification
-	hooks.AddBeforePing(func(id any, message *mcp.PingRequest) {
+	hooks.AddBeforePing(func(ctx context.Context, id any, message *mcp.PingRequest) {
 		beforePingCount++
 		beforePingMessages = append(beforePingMessages, message)
 	})
 
-	hooks.AddAfterPing(func(id any, message *mcp.PingRequest, result *mcp.EmptyResult) {
+	hooks.AddAfterPing(func(ctx context.Context, id any, message *mcp.PingRequest, result *mcp.EmptyResult) {
 		afterPingCount++
 		afterPingData = append(afterPingData, struct {
 			msg *mcp.PingRequest
@@ -1264,11 +1266,11 @@ func TestMCPServer_WithHooks(t *testing.T) {
 		}{message, result})
 	})
 
-	hooks.AddBeforeListTools(func(id any, message *mcp.ListToolsRequest) {
+	hooks.AddBeforeListTools(func(ctx context.Context, id any, message *mcp.ListToolsRequest) {
 		beforeToolsCount++
 	})
 
-	hooks.AddAfterListTools(func(id any, message *mcp.ListToolsRequest, result *mcp.ListToolsResult) {
+	hooks.AddAfterListTools(func(ctx context.Context, id any, message *mcp.ListToolsRequest, result *mcp.ListToolsResult) {
 		afterToolsCount++
 	})
 
@@ -1355,4 +1357,37 @@ func TestMCPServer_WithHooks(t *testing.T) {
 	require.Len(t, onSuccessData, 1, "Expected one OnSuccess Ping message/result pair")
 	assert.IsType(t, afterPingData[0].msg, onSuccessData[0].msg, "OnSuccess message should be same type as AfterPing message")
 	assert.IsType(t, afterPingData[0].res, onSuccessData[0].res, "OnSuccess result should be same type as AfterPing result")
+}
+
+func TestMCPServer_WithRecover(t *testing.T) {
+	panicToolHandler := func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		panic("test panic")
+	}
+
+	server := NewMCPServer(
+		"test-server",
+		"1.0.0",
+		WithRecovery(),
+	)
+
+	server.AddTool(
+		mcp.NewTool("panic-tool"),
+		panicToolHandler,
+	)
+
+	response := server.HandleMessage(context.Background(), []byte(`{
+		"jsonrpc": "2.0",
+		"id": 4,
+		"method": "tools/call",
+		"params": {
+			"name": "panic-tool"
+		}
+	}`))
+
+	errorResponse, ok := response.(mcp.JSONRPCError)
+
+	require.True(t, ok)
+	assert.Equal(t, mcp.INTERNAL_ERROR, errorResponse.Error.Code)
+	assert.Equal(t, "panic recovered in panic-tool tool handler: test panic", errorResponse.Error.Message)
+	assert.Nil(t, errorResponse.Error.Data)
 }

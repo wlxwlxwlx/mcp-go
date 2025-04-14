@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/wlxwlxwlx/mcp-go/mcp"
@@ -52,14 +53,18 @@ var _ ClientSession = (*sseSession)(nil)
 // SSEServer implements a Server-Sent Events (SSE) based MCP server.
 // It provides real-time communication capabilities over HTTP using the SSE protocol.
 type SSEServer struct {
-	server          *MCPServer
-	baseURL         string
-	basePath        string
-	messageEndpoint string
-	sseEndpoint     string
-	sessions        sync.Map
-	srv             *http.Server
-	contextFunc     SSEContextFunc
+	server                       *MCPServer
+	baseURL                      string
+	basePath                     string
+	useFullURLForMessageEndpoint bool
+	messageEndpoint              string
+	sseEndpoint                  string
+	sessions                     sync.Map
+	srv                          *http.Server
+	contextFunc                  SSEContextFunc
+
+	keepAlive         bool
+	keepAliveInterval time.Duration
 }
 
 // SSEOption defines a function type for configuring SSEServer
@@ -106,6 +111,15 @@ func WithMessageEndpoint(endpoint string) SSEOption {
 	}
 }
 
+// WithUseFullURLForMessageEndpoint controls whether the SSE server returns a complete URL (including baseURL)
+// or just the path portion for the message endpoint. Set to false when clients will concatenate
+// the baseURL themselves to avoid malformed URLs like "http://localhost/mcphttp://localhost/mcp/message".
+func WithUseFullURLForMessageEndpoint(useFullURLForMessageEndpoint bool) SSEOption {
+	return func(s *SSEServer) {
+		s.useFullURLForMessageEndpoint = useFullURLForMessageEndpoint
+	}
+}
+
 // WithSSEEndpoint sets the SSE endpoint path
 func WithSSEEndpoint(endpoint string) SSEOption {
 	return func(s *SSEServer) {
@@ -120,6 +134,19 @@ func WithHTTPServer(srv *http.Server) SSEOption {
 	}
 }
 
+func WithKeepAliveInterval(keepAliveInterval time.Duration) SSEOption {
+	return func(s *SSEServer) {
+		s.keepAlive = true
+		s.keepAliveInterval = keepAliveInterval
+	}
+}
+
+func WithKeepAlive(keepAlive bool) SSEOption {
+	return func(s *SSEServer) {
+		s.keepAlive = keepAlive
+	}
+}
+
 // WithContextFunc sets a function that will be called to customise the context
 // to the server using the incoming request.
 func WithSSEContextFunc(fn SSEContextFunc) SSEOption {
@@ -131,9 +158,12 @@ func WithSSEContextFunc(fn SSEContextFunc) SSEOption {
 // NewSSEServer creates a new SSE server instance with the given MCP server and options.
 func NewSSEServer(server *MCPServer, opts ...SSEOption) *SSEServer {
 	s := &SSEServer{
-		server:          server,
-		sseEndpoint:     "/sse",
-		messageEndpoint: "/message",
+		server:                       server,
+		sseEndpoint:                  "/sse",
+		messageEndpoint:              "/message",
+		useFullURLForMessageEndpoint: true,
+		keepAlive:                    false,
+		keepAliveInterval:            10 * time.Second,
 	}
 
 	// Apply all options
@@ -224,7 +254,7 @@ func (s *SSEServer) handleSSE(w http.ResponseWriter, r *http.Request) {
 	s.sessions.Store(sessionID, session)
 	defer s.sessions.Delete(sessionID)
 
-	if err := s.server.RegisterSession(session); err != nil {
+	if err := s.server.RegisterSession(r.Context(), session); err != nil {
 		http.Error(w, fmt.Sprintf("Session registration failed: %v", err), http.StatusInternalServerError)
 		return
 	}
@@ -252,10 +282,27 @@ func (s *SSEServer) handleSSE(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	messageEndpoint := fmt.Sprintf("%s?sessionId=%s", s.CompleteMessageEndpoint(), sessionID)
+	// Start keep alive : ping
+	if s.keepAlive {
+		go func() {
+			ticker := time.NewTicker(s.keepAliveInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					//: ping - 2025-03-27 07:44:38.682659+00:00
+					session.eventQueue <- fmt.Sprintf(":ping - %s\n\n", time.Now().Format(time.RFC3339))
+				case <-session.done:
+					return
+				case <-r.Context().Done():
+					return
+				}
+			}
+		}()
+	}
 
 	// Send the initial endpoint event
-	fmt.Fprintf(w, "event: endpoint\ndata: %s\r\n\r\n", messageEndpoint)
+	fmt.Fprintf(w, "event: endpoint\ndata: %s\r\n\r\n", s.GetMessageEndpointForClient(sessionID))
 	flusher.Flush()
 
 	// Main event loop - this runs in the HTTP handler goroutine
@@ -270,6 +317,16 @@ func (s *SSEServer) handleSSE(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+}
+
+// GetMessageEndpointForClient returns the appropriate message endpoint URL with session ID
+// based on the useFullURLForMessageEndpoint configuration.
+func (s *SSEServer) GetMessageEndpointForClient(sessionID string) string {
+	messageEndpoint := s.messageEndpoint
+	if s.useFullURLForMessageEndpoint {
+		messageEndpoint = s.CompleteMessageEndpoint()
+	}
+	return fmt.Sprintf("%s?sessionId=%s", messageEndpoint, sessionID)
 }
 
 // handleMessage processes incoming JSON-RPC messages from clients and sends responses

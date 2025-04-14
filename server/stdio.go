@@ -158,18 +158,28 @@ func (s *StdioServer) processInputStream(ctx context.Context, reader *bufio.Read
 func (s *StdioServer) readNextLine(ctx context.Context, reader *bufio.Reader) (string, error) {
 	readChan := make(chan string, 1)
 	errChan := make(chan error, 1)
-	defer func() {
-		close(readChan)
-		close(errChan)
-	}()
+	done := make(chan struct{})
+	defer close(done)
 
 	go func() {
-		line, err := reader.ReadString('\n')
-		if err != nil {
-			errChan <- err
+		select {
+		case <-done:
 			return
+		default:
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				select {
+				case errChan <- err:
+				case <-done:
+
+				}
+				return
+			}
+			select {
+			case readChan <- line:
+			case <-done:
+			}
 		}
-		readChan <- line
 	}()
 
 	select {
@@ -191,7 +201,7 @@ func (s *StdioServer) Listen(
 	stdout io.Writer,
 ) error {
 	// Set a static client context since stdio only has one client
-	if err := s.server.RegisterSession(&stdioSessionInstance); err != nil {
+	if err := s.server.RegisterSession(ctx, &stdioSessionInstance); err != nil {
 		return fmt.Errorf("register session: %w", err)
 	}
 	defer s.server.UnregisterSession(stdioSessionInstance.SessionID())
