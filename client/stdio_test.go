@@ -26,6 +26,9 @@ func compileTestServer(outputPath string) error {
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("compilation failed: %v\nOutput: %s", err, output)
 	}
+	if _, err := os.Stat(outputPath); os.IsNotExist(err) {
+		return fmt.Errorf("mock server binary not found at %s after compilation", outputPath)
+	}
 	return nil
 }
 
@@ -47,7 +50,13 @@ func TestStdioMCPClient(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		dec := json.NewDecoder(GetStderr(client))
+
+		stderr, ok := GetStderr(client)
+		if !ok {
+			return
+		}
+
+		dec := json.NewDecoder(stderr)
 		for {
 			var record map[string]any
 			if err := dec.Decode(&record); err != nil {
