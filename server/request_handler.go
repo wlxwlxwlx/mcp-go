@@ -24,6 +24,7 @@ func (s *MCPServer) HandleMessage(
 		JSONRPC string        `json:"jsonrpc"`
 		Method  mcp.MCPMethod `json:"method"`
 		ID      any           `json:"id,omitempty"`
+		Result  any           `json:"result,omitempty"`
 	}
 
 	if err := json.Unmarshal(message, &baseMessage); err != nil {
@@ -56,6 +57,21 @@ func (s *MCPServer) HandleMessage(
 		return nil // Return nil for notifications
 	}
 
+	if baseMessage.Result != nil {
+		// this is a response to a request sent by the server (e.g. from a ping
+		// sent due to WithKeepAlive option)
+		return nil
+	}
+
+	handleErr := s.hooks.onRequestInitialization(ctx, baseMessage.ID, message)
+	if handleErr != nil {
+		return createErrorResponse(
+			baseMessage.ID,
+			mcp.INVALID_REQUEST,
+			handleErr.Error(),
+		)
+	}
+
 	switch baseMessage.Method {
 	case mcp.MethodInitialize:
 		var request mcp.InitializeRequest
@@ -64,7 +80,7 @@ func (s *MCPServer) HandleMessage(
 			err = &requestError{
 				id:   baseMessage.ID,
 				code: mcp.INVALID_REQUEST,
-				err:  &UnparseableMessageError{message: message, err: unmarshalErr, method: baseMessage.Method},
+				err:  &UnparsableMessageError{message: message, err: unmarshalErr, method: baseMessage.Method},
 			}
 		} else {
 			request.Header = header
@@ -84,7 +100,7 @@ func (s *MCPServer) HandleMessage(
 			err = &requestError{
 				id:   baseMessage.ID,
 				code: mcp.INVALID_REQUEST,
-				err:  &UnparseableMessageError{message: message, err: unmarshalErr, method: baseMessage.Method},
+				err:  &UnparsableMessageError{message: message, err: unmarshalErr, method: baseMessage.Method},
 			}
 		} else {
 			request.Header = header
@@ -110,7 +126,7 @@ func (s *MCPServer) HandleMessage(
 			err = &requestError{
 				id:   baseMessage.ID,
 				code: mcp.INVALID_REQUEST,
-				err:  &UnparseableMessageError{message: message, err: unmarshalErr, method: baseMessage.Method},
+				err:  &UnparsableMessageError{message: message, err: unmarshalErr, method: baseMessage.Method},
 			}
 		} else {
 			request.Header = header
@@ -136,7 +152,7 @@ func (s *MCPServer) HandleMessage(
 			err = &requestError{
 				id:   baseMessage.ID,
 				code: mcp.INVALID_REQUEST,
-				err:  &UnparseableMessageError{message: message, err: unmarshalErr, method: baseMessage.Method},
+				err:  &UnparsableMessageError{message: message, err: unmarshalErr, method: baseMessage.Method},
 			}
 		} else {
 			request.Header = header
@@ -162,7 +178,7 @@ func (s *MCPServer) HandleMessage(
 			err = &requestError{
 				id:   baseMessage.ID,
 				code: mcp.INVALID_REQUEST,
-				err:  &UnparseableMessageError{message: message, err: unmarshalErr, method: baseMessage.Method},
+				err:  &UnparsableMessageError{message: message, err: unmarshalErr, method: baseMessage.Method},
 			}
 		} else {
 			request.Header = header
@@ -188,7 +204,7 @@ func (s *MCPServer) HandleMessage(
 			err = &requestError{
 				id:   baseMessage.ID,
 				code: mcp.INVALID_REQUEST,
-				err:  &UnparseableMessageError{message: message, err: unmarshalErr, method: baseMessage.Method},
+				err:  &UnparsableMessageError{message: message, err: unmarshalErr, method: baseMessage.Method},
 			}
 		} else {
 			request.Header = header
@@ -214,7 +230,7 @@ func (s *MCPServer) HandleMessage(
 			err = &requestError{
 				id:   baseMessage.ID,
 				code: mcp.INVALID_REQUEST,
-				err:  &UnparseableMessageError{message: message, err: unmarshalErr, method: baseMessage.Method},
+				err:  &UnparsableMessageError{message: message, err: unmarshalErr, method: baseMessage.Method},
 			}
 		} else {
 			request.Header = header
@@ -240,7 +256,7 @@ func (s *MCPServer) HandleMessage(
 			err = &requestError{
 				id:   baseMessage.ID,
 				code: mcp.INVALID_REQUEST,
-				err:  &UnparseableMessageError{message: message, err: unmarshalErr, method: baseMessage.Method},
+				err:  &UnparsableMessageError{message: message, err: unmarshalErr, method: baseMessage.Method},
 			}
 		} else {
 			request.Header = header
@@ -266,7 +282,7 @@ func (s *MCPServer) HandleMessage(
 			err = &requestError{
 				id:   baseMessage.ID,
 				code: mcp.INVALID_REQUEST,
-				err:  &UnparseableMessageError{message: message, err: unmarshalErr, method: baseMessage.Method},
+				err:  &UnparsableMessageError{message: message, err: unmarshalErr, method: baseMessage.Method},
 			}
 		} else {
 			request.Header = header

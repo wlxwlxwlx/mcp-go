@@ -75,6 +75,8 @@ type Tool struct {
 	InputSchema ToolInputSchema `json:"inputSchema"`
 	// Alternative to InputSchema - allows arbitrary JSON Schema to be provided
 	RawInputSchema json.RawMessage `json:"-"` // Hide this from JSON marshaling
+	// Optional properties describing tool behavior
+	Annotations ToolAnnotation `json:"annotations"`
 }
 
 // MarshalJSON implements the json.Marshaler interface for Tool.
@@ -100,13 +102,45 @@ func (t Tool) MarshalJSON() ([]byte, error) {
 		m["inputSchema"] = t.InputSchema
 	}
 
+	m["annotations"] = t.Annotations
+
 	return json.Marshal(m)
 }
 
 type ToolInputSchema struct {
 	Type       string                 `json:"type"`
-	Properties map[string]interface{} `json:"properties"`
+	Properties map[string]interface{} `json:"properties,omitempty"`
 	Required   []string               `json:"required,omitempty"`
+}
+
+// MarshalJSON implements the json.Marshaler interface for ToolInputSchema.
+func (tis ToolInputSchema) MarshalJSON() ([]byte, error) {
+	m := make(map[string]interface{})
+	m["type"] = tis.Type
+
+	// Marshal Properties to '{}' rather than `nil` when its length equals zero
+	if tis.Properties != nil {
+		m["properties"] = tis.Properties
+	}
+
+	if len(tis.Required) > 0 {
+		m["required"] = tis.Required
+	}
+
+	return json.Marshal(m)
+}
+
+type ToolAnnotation struct {
+	// Human-readable title for the tool
+	Title string `json:"title,omitempty"`
+	// If true, the tool does not modify its environment
+	ReadOnlyHint bool `json:"readOnlyHint,omitempty"`
+	// If true, the tool may perform destructive updates
+	DestructiveHint bool `json:"destructiveHint,omitempty"`
+	// If true, repeated calls with same args have no additional effect
+	IdempotentHint bool `json:"idempotentHint,omitempty"`
+	// If true, tool interacts with external entities
+	OpenWorldHint bool `json:"openWorldHint,omitempty"`
 }
 
 // ToolOption is a function that configures a Tool.
@@ -131,6 +165,13 @@ func NewTool(name string, opts ...ToolOption) Tool {
 			Type:       "object",
 			Properties: make(map[string]interface{}),
 			Required:   nil, // Will be omitted from JSON if empty
+		},
+		Annotations: ToolAnnotation{
+			Title:           "",
+			ReadOnlyHint:    false,
+			DestructiveHint: true,
+			IdempotentHint:  false,
+			OpenWorldHint:   true,
 		},
 	}
 
@@ -163,6 +204,12 @@ func NewToolWithRawSchema(name, description string, schema json.RawMessage) Tool
 func WithDescription(description string) ToolOption {
 	return func(t *Tool) {
 		t.Description = description
+	}
+}
+
+func WithToolAnnotation(annotation ToolAnnotation) ToolOption {
+	return func(t *Tool) {
+		t.Annotations = annotation
 	}
 }
 
@@ -281,6 +328,18 @@ func MultipleOf(value float64) PropertyOption {
 // DefaultBool sets the default value for a boolean property.
 // This value will be used if the property is not explicitly provided.
 func DefaultBool(value bool) PropertyOption {
+	return func(schema map[string]interface{}) {
+		schema["default"] = value
+	}
+}
+
+//
+// Array Property Options
+//
+
+// DefaultArray sets the default value for an array property.
+// This value will be used if the property is not explicitly provided.
+func DefaultArray[T any](value []T) PropertyOption {
 	return func(schema map[string]interface{}) {
 		schema["default"] = value
 	}
