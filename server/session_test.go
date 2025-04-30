@@ -194,7 +194,8 @@ func TestMCPServer_ToolsWithSessionTools(t *testing.T) {
 
 	// List tools with session context
 	sessionCtx := server.WithContext(context.Background(), session)
-	resp := server.HandleMessage(sessionCtx, []byte(`{
+	header := map[string]string{"Authorization": "Bearer test"}
+	resp := server.HandleMessage(sessionCtx, header, []byte(`{
 		"jsonrpc": "2.0",
 		"id": 1,
 		"method": "tools/list"
@@ -386,7 +387,8 @@ func TestMCPServer_ToolFiltering(t *testing.T) {
 
 	// List tools with session context
 	sessionCtx := server.WithContext(context.Background(), session)
-	response := server.HandleMessage(sessionCtx, []byte(`{
+	header := map[string]string{"Authorization": "Bearer test"}
+	response := server.HandleMessage(sessionCtx, header, []byte(`{
 		"jsonrpc": "2.0",
 		"id": 1,
 		"method": "tools/list"
