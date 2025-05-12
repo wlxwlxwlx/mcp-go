@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"flag"
 	"fmt"
 	"log"
+	"strconv"
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -64,6 +66,7 @@ func NewMCPServer() *server.MCPServer {
 		"1.0.0",
 		server.WithResourceCapabilities(true, true),
 		server.WithPromptCapabilities(true),
+		server.WithToolCapabilities(true),
 		server.WithLogging(),
 		server.WithHooks(hooks),
 	)
@@ -79,6 +82,12 @@ func NewMCPServer() *server.MCPServer {
 		),
 		handleResourceTemplate,
 	)
+
+	resources := generateResources()
+	for _, resource := range resources {
+		mcpServer.AddResource(resource, handleGeneratedResource)
+	}
+
 	mcpServer.AddPrompt(mcp.NewPrompt(string(SIMPLE),
 		mcp.WithPromptDescription("A simple prompt"),
 	), handleSimplePrompt)
@@ -137,12 +146,12 @@ func NewMCPServer() *server.MCPServer {
 	// 	Description: "Samples from an LLM using MCP's sampling feature",
 	// 	InputSchema: mcp.ToolInputSchema{
 	// 		Type: "object",
-	// 		Properties: map[string]interface{}{
-	// 			"prompt": map[string]interface{}{
+	// 		Properties: map[string]any{
+	// 			"prompt": map[string]any{
 	// 				"type":        "string",
 	// 				"description": "The prompt to send to the LLM",
 	// 			},
-	// 			"maxTokens": map[string]interface{}{
+	// 			"maxTokens": map[string]any{
 	// 				"type":        "number",
 	// 				"description": "Maximum number of tokens to generate",
 	// 				"default":     100,
@@ -180,27 +189,6 @@ func generateResources() []mcp.Resource {
 	return resources
 }
 
-func runUpdateInterval() {
-	// for range s.updateTicker.C {
-	// 	for uri := range s.subscriptions {
-	// 		s.server.HandleMessage(
-	// 			context.Background(),
-	// 			mcp.JSONRPCNotification{
-	// 				JSONRPC: mcp.JSONRPC_VERSION,
-	// 				Notification: mcp.Notification{
-	// 					Method: "resources/updated",
-	// 					Params: struct {
-	// 						Meta map[string]interface{} `json:"_meta,omitempty"`
-	// 					}{
-	// 						Meta: map[string]interface{}{"uri": uri},
-	// 					},
-	// 				},
-	// 			},
-	// 		)
-	// 	}
-	// }
-}
-
 func handleReadResource(
 	ctx context.Context,
 	request mcp.ReadResourceRequest,
@@ -225,6 +213,43 @@ func handleResourceTemplate(
 			Text:     "This is a sample resource",
 		},
 	}, nil
+}
+
+func handleGeneratedResource(
+	ctx context.Context,
+	request mcp.ReadResourceRequest,
+) ([]mcp.ResourceContents, error) {
+	uri := request.Params.URI
+
+	var resourceNumber string
+	if _, err := fmt.Sscanf(uri, "test://static/resource/%s", &resourceNumber); err != nil {
+		return nil, fmt.Errorf("invalid resource URI format: %w", err)
+	}
+
+	num, err := strconv.Atoi(resourceNumber)
+	if err != nil {
+		return nil, fmt.Errorf("invalid resource number: %w", err)
+	}
+
+	index := num - 1
+
+	if index%2 == 0 {
+		return []mcp.ResourceContents{
+			mcp.TextResourceContents{
+				URI:      uri,
+				MIMEType: "text/plain",
+				Text:     fmt.Sprintf("Text content for resource %d", num),
+			},
+		}, nil
+	} else {
+		return []mcp.ResourceContents{
+			mcp.BlobResourceContents{
+				URI:      uri,
+				MIMEType: "application/octet-stream",
+				Blob:     base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("Binary content for resource %d", num))),
+			},
+		}, nil
+	}
 }
 
 func handleSimplePrompt(
@@ -333,7 +358,7 @@ func handleSendNotification(
 	err := server.SendNotificationToClient(
 		ctx,
 		"notifications/progress",
-		map[string]interface{}{
+		map[string]any{
 			"progress":      10,
 			"total":         10,
 			"progressToken": 0,
@@ -370,7 +395,7 @@ func handleLongRunningOperationTool(
 			server.SendNotificationToClient(
 				ctx,
 				"notifications/progress",
-				map[string]interface{}{
+				map[string]any{
 					"progress":      i,
 					"total":         int(steps),
 					"progressToken": progressToken,
@@ -394,7 +419,7 @@ func handleLongRunningOperationTool(
 	}, nil
 }
 
-// func (s *MCPServer) handleSampleLLMTool(arguments map[string]interface{}) (*mcp.CallToolResult, error) {
+// func (s *MCPServer) handleSampleLLMTool(arguments map[string]any) (*mcp.CallToolResult, error) {
 // 	prompt, _ := arguments["prompt"].(string)
 // 	maxTokens, _ := arguments["maxTokens"].(float64)
 
@@ -406,7 +431,7 @@ func handleLongRunningOperationTool(
 // 	)
 
 // 	return &mcp.CallToolResult{
-// 		Content: []interface{}{
+// 		Content: []any{
 // 			mcp.TextContent{
 // 				Type: "text",
 // 				Text: fmt.Sprintf("LLM sampling result: %s", result),

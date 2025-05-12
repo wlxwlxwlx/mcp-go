@@ -22,19 +22,22 @@ func TestInProcessMCPClient(t *testing.T) {
 		"test-tool",
 		mcp.WithDescription("Test tool"),
 		mcp.WithString("parameter-1", mcp.Description("A string tool parameter")),
-		mcp.WithToolAnnotation(mcp.ToolAnnotation{
-			Title:           "Test Tool Annotation Title",
-			ReadOnlyHint:    true,
-			DestructiveHint: false,
-			IdempotentHint:  true,
-			OpenWorldHint:   false,
-		}),
+		mcp.WithTitleAnnotation("Test Tool Annotation Title"),
+		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithIdempotentHintAnnotation(true),
+		mcp.WithOpenWorldHintAnnotation(false),
 	), func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{
 				mcp.TextContent{
 					Type: "text",
 					Text: "Input parameter: " + request.Params.Arguments["parameter-1"].(string),
+				},
+				mcp.AudioContent{
+					Type:     "audio",
+					Data:     "base64-encoded-audio-data",
+					MIMEType: "audio/wav",
 				},
 			},
 		}, nil
@@ -75,6 +78,14 @@ func TestInProcessMCPClient(t *testing.T) {
 						Content: mcp.TextContent{
 							Type: "text",
 							Text: "Test prompt with arg1: " + request.Params.Arguments["arg1"],
+						},
+					},
+					{
+						Role: mcp.RoleUser,
+						Content: mcp.AudioContent{
+							Type:     "audio",
+							Data:     "base64-encoded-audio-data",
+							MIMEType: "audio/wav",
 						},
 					},
 				},
@@ -130,10 +141,10 @@ func TestInProcessMCPClient(t *testing.T) {
 		}
 		testToolAnnotations := (*toolListResult).Tools[0].Annotations
 		if testToolAnnotations.Title != "Test Tool Annotation Title" ||
-			testToolAnnotations.ReadOnlyHint != true ||
-			testToolAnnotations.DestructiveHint != false ||
-			testToolAnnotations.IdempotentHint != true ||
-			testToolAnnotations.OpenWorldHint != false {
+			*testToolAnnotations.ReadOnlyHint != true ||
+			*testToolAnnotations.DestructiveHint != false ||
+			*testToolAnnotations.IdempotentHint != true ||
+			*testToolAnnotations.OpenWorldHint != false {
 			t.Errorf("The annotations of the tools are invalid")
 		}
 	})
@@ -183,7 +194,7 @@ func TestInProcessMCPClient(t *testing.T) {
 
 		request := mcp.CallToolRequest{}
 		request.Params.Name = "test-tool"
-		request.Params.Arguments = map[string]interface{}{
+		request.Params.Arguments = map[string]any{
 			"parameter-1": "value1",
 		}
 
@@ -192,8 +203,8 @@ func TestInProcessMCPClient(t *testing.T) {
 			t.Fatalf("CallTool failed: %v", err)
 		}
 
-		if len(result.Content) != 1 {
-			t.Errorf("Expected 1 content item, got %d", len(result.Content))
+		if len(result.Content) != 2 {
+			t.Errorf("Expected 2 content item, got %d", len(result.Content))
 		}
 	})
 
@@ -359,14 +370,17 @@ func TestInProcessMCPClient(t *testing.T) {
 
 		request := mcp.GetPromptRequest{}
 		request.Params.Name = "test-prompt"
+		request.Params.Arguments = map[string]string{
+			"arg1": "arg1 value",
+		}
 
 		result, err := client.GetPrompt(context.Background(), request)
 		if err != nil {
 			t.Errorf("GetPrompt failed: %v", err)
 		}
 
-		if len(result.Messages) != 1 {
-			t.Errorf("Expected 1 message, got %d", len(result.Messages))
+		if len(result.Messages) != 2 {
+			t.Errorf("Expected 2 message, got %d", len(result.Messages))
 		}
 	})
 
