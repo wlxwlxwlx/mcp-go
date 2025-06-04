@@ -4,6 +4,9 @@ package mcp
 
 import (
 	"encoding/json"
+	"fmt"
+	"maps"
+	"strconv"
 
 	"github.com/yosida95/uritemplate/v3"
 )
@@ -47,6 +50,10 @@ const (
 	// https://modelcontextprotocol.io/specification/2024-11-05/server/tools/
 	MethodToolsCall MCPMethod = "tools/call"
 
+	// MethodSetLogLevel configures the minimum log level for client
+	// https://modelcontextprotocol.io/specification/2025-03-26/server/utilities/logging
+	MethodSetLogLevel MCPMethod = "logging/setLevel"
+
 	// MethodNotificationResourcesListChanged notifies when the list of available resources changes.
 	// https://modelcontextprotocol.io/specification/2025-03-26/server/resources#list-changed-notification
 	MethodNotificationResourcesListChanged = "notifications/resources/list_changed"
@@ -67,7 +74,7 @@ type URITemplate struct {
 }
 
 func (t *URITemplate) MarshalJSON() ([]byte, error) {
-	return json.Marshal(t.Template.Raw())
+	return json.Marshal(t.Raw())
 }
 
 func (t *URITemplate) UnmarshalJSON(data []byte) error {
@@ -89,7 +96,13 @@ func (t *URITemplate) UnmarshalJSON(data []byte) error {
 type JSONRPCMessage any
 
 // LATEST_PROTOCOL_VERSION is the most recent version of the MCP protocol.
-const LATEST_PROTOCOL_VERSION = "2024-11-05"
+const LATEST_PROTOCOL_VERSION = "2025-03-26"
+
+// ValidProtocolVersions lists all known valid MCP protocol versions.
+var ValidProtocolVersions = []string{
+	"2024-11-05",
+	LATEST_PROTOCOL_VERSION,
+}
 
 // JSONRPC_VERSION is the version of JSON-RPC used by MCP.
 const JSONRPC_VERSION = "2.0"
@@ -100,20 +113,51 @@ type ProgressToken any
 // Cursor is an opaque token used to represent a cursor for pagination.
 type Cursor string
 
+// Meta is metadata attached to a request's parameters. This can include fields
+// formally defined by the protocol or other arbitrary data.
+type Meta struct {
+	// If specified, the caller is requesting out-of-band progress
+	// notifications for this request (as represented by
+	// notifications/progress). The value of this parameter is an
+	// opaque token that will be attached to any subsequent
+	// notifications. The receiver is not obligated to provide these
+	// notifications.
+	ProgressToken ProgressToken
+
+	// AdditionalFields are any fields present in the Meta that are not
+	// otherwise defined in the protocol.
+	AdditionalFields map[string]any
+}
+
+func (m *Meta) MarshalJSON() ([]byte, error) {
+	raw := make(map[string]any)
+	if m.ProgressToken != nil {
+		raw["progressToken"] = m.ProgressToken
+	}
+	maps.Copy(raw, m.AdditionalFields)
+
+	return json.Marshal(raw)
+}
+
+func (m *Meta) UnmarshalJSON(data []byte) error {
+	raw := make(map[string]any)
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	m.ProgressToken = raw["progressToken"]
+	delete(raw, "progressToken")
+	m.AdditionalFields = raw
+	return nil
+}
+
 type Request struct {
-	Header map[string]string
-	Method string `json:"method"`
-	Params struct {
-		Meta *struct {
-			// If specified, the caller is requesting out-of-band progress
-			// notifications for this request (as represented by
-			// notifications/progress). The value of this parameter is an
-			// opaque token that will be attached to any subsequent
-			// notifications. The receiver is not obligated to provide these
-			// notifications.
-			ProgressToken ProgressToken `json:"progressToken,omitempty"`
-		} `json:"_meta,omitempty"`
-	} `json:"params,omitempty"`
+	Header map[string]string `json:"header"`
+	Method string            `json:"method"`
+	Params RequestParams     `json:"params,omitempty"`
+}
+
+type RequestParams struct {
+	Meta *Meta `json:"_meta,omitempty"`
 }
 
 type Params map[string]any
@@ -193,7 +237,75 @@ type Result struct {
 
 // RequestId is a uniquely identifying ID for a request in JSON-RPC.
 // It can be any JSON-serializable value, typically a number or string.
-type RequestId any
+type RequestId struct {
+	value any
+}
+
+// NewRequestId creates a new RequestId with the given value
+func NewRequestId(value any) RequestId {
+	return RequestId{value: value}
+}
+
+// Value returns the underlying value of the RequestId
+func (r RequestId) Value() any {
+	return r.value
+}
+
+// String returns a string representation of the RequestId
+func (r RequestId) String() string {
+	switch v := r.value.(type) {
+	case string:
+		return "string:" + v
+	case int64:
+		return "int64:" + strconv.FormatInt(v, 10)
+	case float64:
+		if v == float64(int64(v)) {
+			return "int64:" + strconv.FormatInt(int64(v), 10)
+		}
+		return "float64:" + strconv.FormatFloat(v, 'f', -1, 64)
+	case nil:
+		return "<nil>"
+	default:
+		return "unknown:" + fmt.Sprintf("%v", v)
+	}
+}
+
+// IsNil returns true if the RequestId is nil
+func (r RequestId) IsNil() bool {
+	return r.value == nil
+}
+
+func (r RequestId) MarshalJSON() ([]byte, error) {
+	return json.Marshal(r.value)
+}
+
+func (r *RequestId) UnmarshalJSON(data []byte) error {
+
+	if string(data) == "null" {
+		r.value = nil
+		return nil
+	}
+
+	// Try unmarshaling as string first
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		r.value = s
+		return nil
+	}
+
+	// JSON numbers are unmarshaled as float64 in Go
+	var f float64
+	if err := json.Unmarshal(data, &f); err == nil {
+		if f == float64(int64(f)) {
+			r.value = int64(f)
+		} else {
+			r.value = f
+		}
+		return nil
+	}
+
+	return fmt.Errorf("invalid request id: %s", string(data))
+}
 
 // JSONRPCRequest represents a request that expects a response.
 type JSONRPCRequest struct {
@@ -266,17 +378,19 @@ type EmptyResult Result
 // A client MUST NOT attempt to cancel its `initialize` request.
 type CancelledNotification struct {
 	Notification
-	Params struct {
-		// The ID of the request to cancel.
-		//
-		// This MUST correspond to the ID of a request previously issued
-		// in the same direction.
-		RequestId RequestId `json:"requestId"`
+	Params CancelledNotificationParams `json:"params"`
+}
 
-		// An optional string describing the reason for the cancellation. This MAY
-		// be logged or presented to the user.
-		Reason string `json:"reason,omitempty"`
-	} `json:"params"`
+type CancelledNotificationParams struct {
+	// The ID of the request to cancel.
+	//
+	// This MUST correspond to the ID of a request previously issued
+	// in the same direction.
+	RequestId RequestId `json:"requestId"`
+
+	// An optional string describing the reason for the cancellation. This MAY
+	// be logged or presented to the user.
+	Reason string `json:"reason,omitempty"`
 }
 
 /* Initialization */
@@ -285,13 +399,15 @@ type CancelledNotification struct {
 // connects, asking it to begin initialization.
 type InitializeRequest struct {
 	Request
-	Params struct {
-		// The latest version of the Model Context Protocol that the client supports.
-		// The client MAY decide to support older versions as well.
-		ProtocolVersion string             `json:"protocolVersion"`
-		Capabilities    ClientCapabilities `json:"capabilities"`
-		ClientInfo      Implementation     `json:"clientInfo"`
-	} `json:"params"`
+	Params InitializeParams `json:"params"`
+}
+
+type InitializeParams struct {
+	// The latest version of the Model Context Protocol that the client supports.
+	// The client MAY decide to support older versions as well.
+	ProtocolVersion string             `json:"protocolVersion"`
+	Capabilities    ClientCapabilities `json:"capabilities"`
+	ClientInfo      Implementation     `json:"clientInfo"`
 }
 
 // InitializeResult is sent after receiving an initialize request from the
@@ -382,30 +498,34 @@ type PingRequest struct {
 // receiver of a progress update for a long-running request.
 type ProgressNotification struct {
 	Notification
-	Params struct {
-		// The progress token which was given in the initial request, used to
-		// associate this notification with the request that is proceeding.
-		ProgressToken ProgressToken `json:"progressToken"`
-		// The progress thus far. This should increase every time progress is made,
-		// even if the total is unknown.
-		Progress float64 `json:"progress"`
-		// Total number of items to process (or total progress required), if known.
-		Total float64 `json:"total,omitempty"`
-		// Message related to progress. This should provide relevant human-readable
-		// progress information.
-		Message string `json:"message,omitempty"`
-	} `json:"params"`
+	Params ProgressNotificationParams `json:"params"`
+}
+
+type ProgressNotificationParams struct {
+	// The progress token which was given in the initial request, used to
+	// associate this notification with the request that is proceeding.
+	ProgressToken ProgressToken `json:"progressToken"`
+	// The progress thus far. This should increase every time progress is made,
+	// even if the total is unknown.
+	Progress float64 `json:"progress"`
+	// Total number of items to process (or total progress required), if known.
+	Total float64 `json:"total,omitempty"`
+	// Message related to progress. This should provide relevant human-readable
+	// progress information.
+	Message string `json:"message,omitempty"`
 }
 
 /* Pagination */
 
 type PaginatedRequest struct {
 	Request
-	Params struct {
-		// An opaque token representing the current pagination position.
-		// If provided, the server should return results starting after this cursor.
-		Cursor Cursor `json:"cursor,omitempty"`
-	} `json:"params,omitempty"`
+	Params PaginatedParams `json:"params,omitempty"`
+}
+
+type PaginatedParams struct {
+	// An opaque token representing the current pagination position.
+	// If provided, the server should return results starting after this cursor.
+	Cursor Cursor `json:"cursor,omitempty"`
 }
 
 type PaginatedResult struct {
@@ -448,13 +568,15 @@ type ListResourceTemplatesResult struct {
 // specific resource URI.
 type ReadResourceRequest struct {
 	Request
-	Params struct {
-		// The URI of the resource to read. The URI can use any protocol; it is up
-		// to the server how to interpret it.
-		URI string `json:"uri"`
-		// Arguments to pass to the resource handler
-		Arguments map[string]any `json:"arguments,omitempty"`
-	} `json:"params"`
+	Params ReadResourceParams `json:"params"`
+}
+
+type ReadResourceParams struct {
+	// The URI of the resource to read. The URI can use any protocol; it is up
+	// to the server how to interpret it.
+	URI string `json:"uri"`
+	// Arguments to pass to the resource handler
+	Arguments map[string]any `json:"arguments,omitempty"`
 }
 
 // ReadResourceResult is the server's response to a resources/read request
@@ -476,11 +598,13 @@ type ResourceListChangedNotification struct {
 // notifications from the server whenever a particular resource changes.
 type SubscribeRequest struct {
 	Request
-	Params struct {
-		// The URI of the resource to subscribe to. The URI can use any protocol; it
-		// is up to the server how to interpret it.
-		URI string `json:"uri"`
-	} `json:"params"`
+	Params SubscribeParams `json:"params"`
+}
+
+type SubscribeParams struct {
+	// The URI of the resource to subscribe to. The URI can use any protocol; it
+	// is up to the server how to interpret it.
+	URI string `json:"uri"`
 }
 
 // UnsubscribeRequest is sent from the client to request cancellation of
@@ -488,10 +612,12 @@ type SubscribeRequest struct {
 // resources/subscribe request.
 type UnsubscribeRequest struct {
 	Request
-	Params struct {
-		// The URI of the resource to unsubscribe from.
-		URI string `json:"uri"`
-	} `json:"params"`
+	Params UnsubscribeParams `json:"params"`
+}
+
+type UnsubscribeParams struct {
+	// The URI of the resource to unsubscribe from.
+	URI string `json:"uri"`
 }
 
 // ResourceUpdatedNotification is a notification from the server to the client,
@@ -499,11 +625,12 @@ type UnsubscribeRequest struct {
 // should only be sent if the client previously sent a resources/subscribe request.
 type ResourceUpdatedNotification struct {
 	Notification
-	Params struct {
-		// The URI of the resource that has been updated. This might be a sub-
-		// resource of the one that the client actually subscribed to.
-		URI string `json:"uri"`
-	} `json:"params"`
+	Params ResourceUpdatedNotificationParams `json:"params"`
+}
+type ResourceUpdatedNotificationParams struct {
+	// The URI of the resource that has been updated. This might be a sub-
+	// resource of the one that the client actually subscribed to.
+	URI string `json:"uri"`
 }
 
 // Resource represents a known resource that the server is capable of reading.
@@ -590,12 +717,14 @@ func (BlobResourceContents) isResourceContents() {}
 // adjust logging.
 type SetLevelRequest struct {
 	Request
-	Params struct {
-		// The level of logging that the client wants to receive from the server.
-		// The server should send all logs at this level and higher (i.e., more severe) to
-		// the client as notifications/logging/message.
-		Level LoggingLevel `json:"level"`
-	} `json:"params"`
+	Params SetLevelParams `json:"params"`
+}
+
+type SetLevelParams struct {
+	// The level of logging that the client wants to receive from the server.
+	// The server should send all logs at this level and higher (i.e., more severe) to
+	// the client as notifications/logging/message.
+	Level LoggingLevel `json:"level"`
 }
 
 // LoggingMessageNotification is a notification of a log message passed from
@@ -603,15 +732,17 @@ type SetLevelRequest struct {
 // the server MAY decide which messages to send automatically.
 type LoggingMessageNotification struct {
 	Notification
-	Params struct {
-		// The severity of this log message.
-		Level LoggingLevel `json:"level"`
-		// An optional name of the logger issuing this message.
-		Logger string `json:"logger,omitempty"`
-		// The data to be logged, such as a string message or an object. Any JSON
-		// serializable type is allowed here.
-		Data any `json:"data"`
-	} `json:"params"`
+	Params LoggingMessageNotificationParams `json:"params"`
+}
+
+type LoggingMessageNotificationParams struct {
+	// The severity of this log message.
+	Level LoggingLevel `json:"level"`
+	// An optional name of the logger issuing this message.
+	Logger string `json:"logger,omitempty"`
+	// The data to be logged, such as a string message or an object. Any JSON
+	// serializable type is allowed here.
+	Data any `json:"data"`
 }
 
 // LoggingLevel represents the severity of a log message.
@@ -639,16 +770,18 @@ const (
 // the request (human in the loop) and decide whether to approve it.
 type CreateMessageRequest struct {
 	Request
-	Params struct {
-		Messages         []SamplingMessage `json:"messages"`
-		ModelPreferences *ModelPreferences `json:"modelPreferences,omitempty"`
-		SystemPrompt     string            `json:"systemPrompt,omitempty"`
-		IncludeContext   string            `json:"includeContext,omitempty"`
-		Temperature      float64           `json:"temperature,omitempty"`
-		MaxTokens        int               `json:"maxTokens"`
-		StopSequences    []string          `json:"stopSequences,omitempty"`
-		Metadata         any               `json:"metadata,omitempty"`
-	} `json:"params"`
+	CreateMessageParams `json:"params"`
+}
+
+type CreateMessageParams struct {
+	Messages         []SamplingMessage `json:"messages"`
+	ModelPreferences *ModelPreferences `json:"modelPreferences,omitempty"`
+	SystemPrompt     string            `json:"systemPrompt,omitempty"`
+	IncludeContext   string            `json:"includeContext,omitempty"`
+	Temperature      float64           `json:"temperature,omitempty"`
+	MaxTokens        int               `json:"maxTokens"`
+	StopSequences    []string          `json:"stopSequences,omitempty"`
+	Metadata         any               `json:"metadata,omitempty"`
 }
 
 // CreateMessageResult is the client's response to a sampling/create_message
@@ -806,15 +939,17 @@ type ModelHint struct {
 // CompleteRequest is a request from the client to the server, to ask for completion options.
 type CompleteRequest struct {
 	Request
-	Params struct {
-		Ref      any `json:"ref"` // Can be PromptReference or ResourceReference
-		Argument struct {
-			// The name of the argument
-			Name string `json:"name"`
-			// The value of the argument to use for completion matching.
-			Value string `json:"value"`
-		} `json:"argument"`
-	} `json:"params"`
+	Params CompleteParams `json:"params"`
+}
+
+type CompleteParams struct {
+	Ref      any `json:"ref"` // Can be PromptReference or ResourceReference
+	Argument struct {
+		// The name of the argument
+		Name string `json:"name"`
+		// The value of the argument to use for completion matching.
+		Value string `json:"value"`
+	} `json:"argument"`
 }
 
 // CompleteResult is the server's response to a completion/complete request

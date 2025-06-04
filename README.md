@@ -58,9 +58,9 @@ func main() {
 }
 
 func helloHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-    name, ok := request.Params.Arguments["name"].(string)
-    if !ok {
-        return nil, errors.New("name must be a string")
+    name, err := request.RequireString("name")
+    if err != nil {
+        return mcp.NewToolResultError(err.Error()), nil
     }
 
     return mcp.NewToolResultText(fmt.Sprintf("Hello, %s!", name)), nil
@@ -94,14 +94,15 @@ MCP Go handles all the complex protocol details and server management, so you ca
   - [Prompts](#prompts)
 - [Examples](#examples)
 - [Extras](#extras)
+  - [Transports](#transports)
   - [Session Management](#session-management)
+    - [Basic Session Handling](#basic-session-handling)
+    - [Per-Session Tools](#per-session-tools)
+    - [Tool Filtering](#tool-filtering)
+    - [Working with Context](#working-with-context)
   - [Request Hooks](#request-hooks)
   - [Tool Handler Middleware](#tool-handler-middleware)
-- [Contributing](#contributing)
-  - [Prerequisites](#prerequisites)
-  - [Installation](#installation-1)
-  - [Testing](#testing)
-  - [Opening a Pull Request](#opening-a-pull-request)
+  - [Regenerating Server Code](#regenerating-server-code)
 
 ## Installation
 
@@ -153,9 +154,21 @@ func main() {
 
     // Add the calculator handler
     s.AddTool(calculatorTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-        op := request.Params.Arguments["operation"].(string)
-        x := request.Params.Arguments["x"].(float64)
-        y := request.Params.Arguments["y"].(float64)
+        // Using helper functions for type-safe argument access
+        op, err := request.RequireString("operation")
+        if err != nil {
+            return mcp.NewToolResultError(err.Error()), nil
+        }
+        
+        x, err := request.RequireFloat("x")
+        if err != nil {
+            return mcp.NewToolResultError(err.Error()), nil
+        }
+        
+        y, err := request.RequireFloat("y")
+        if err != nil {
+            return mcp.NewToolResultError(err.Error()), nil
+        }
 
         var result float64
         switch op {
@@ -316,9 +329,10 @@ calculatorTool := mcp.NewTool("calculate",
 )
 
 s.AddTool(calculatorTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-    op := request.Params.Arguments["operation"].(string)
-    x := request.Params.Arguments["x"].(float64)
-    y := request.Params.Arguments["y"].(float64)
+    args := request.GetArguments()
+    op := args["operation"].(string)
+    x := args["x"].(float64)
+    y := args["y"].(float64)
 
     var result float64
     switch op {
@@ -359,10 +373,11 @@ httpTool := mcp.NewTool("http_request",
 )
 
 s.AddTool(httpTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-    method := request.Params.Arguments["method"].(string)
-    url := request.Params.Arguments["url"].(string)
+    args := request.GetArguments()
+    method := args["method"].(string)
+    url := args["url"].(string)
     body := ""
-    if b, ok := request.Params.Arguments["body"].(string); ok {
+    if b, ok := args["body"].(string); ok {
         body = b
     }
 
@@ -517,9 +532,13 @@ Prompts can include:
 
 ## Examples
 
-For examples, see the `examples/` directory.
+For examples, see the [`examples/`](examples/) directory.
 
 ## Extras
+
+### Transports
+
+MCP-Go supports stdio, SSE and streamable-HTTP transport layers.
 
 ### Session Management
 
@@ -746,57 +765,14 @@ Add middleware to tool call handlers using the `server.WithToolHandlerMiddleware
 
 A recovery middleware option is available to recover from panics in a tool call and can be added to the server with the `server.WithRecovery` option.
 
-## Contributing
+### Regenerating Server Code
 
-<details>
-
-<summary><h3>Open Developer Guide</h3></summary>
-
-### Prerequisites
-
-Go version >= 1.23
-
-### Installation
-
-Create a fork of this repository, then clone it:
+Server hooks and request handlers are generated. Regenerate them by running:
 
 ```bash
-git clone https://github.com/mark3labs/mcp-go.git
-cd mcp-go
+go generate ./...
 ```
 
-### Testing
+You need `go` installed and the `goimports` tool available. The generator runs
+`goimports` automatically to format and fix imports.
 
-Please make sure to test any new functionality. Your tests should be simple and atomic and anticipate change rather than cement complex patterns.
-
-Run tests from the root directory:
-
-```bash
-go test -v './...'
-```
-
-### Opening a Pull Request
-
-Fork the repository and create a new branch:
-
-```bash
-git checkout -b my-branch
-```
-
-Make your changes and commit them:
-
-
-```bash
-git add . && git commit -m "My changes"
-```
-
-Push your changes to your fork:
-
-
-```bash
-git push origin my-branch
-```
-
-Feel free to reach out in a GitHub issue or discussion if you have any questions!
-
-</details>

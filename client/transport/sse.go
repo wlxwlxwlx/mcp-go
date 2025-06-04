@@ -25,12 +25,13 @@ type SSE struct {
 	baseURL        *url.URL
 	endpoint       *url.URL
 	httpClient     *http.Client
-	responses      map[int64]chan *JSONRPCResponse
+	responses      map[string]chan *JSONRPCResponse
 	mu             sync.RWMutex
 	onNotification func(mcp.JSONRPCNotification)
 	notifyMu       sync.RWMutex
 	endpointChan   chan struct{}
 	headers        map[string]string
+	headerFunc     HTTPHeaderFunc
 
 	started         atomic.Bool
 	closed          atomic.Bool
@@ -42,6 +43,12 @@ type ClientOption func(*SSE)
 func WithHeaders(headers map[string]string) ClientOption {
 	return func(sc *SSE) {
 		sc.headers = headers
+	}
+}
+
+func WithHeaderFunc(headerFunc HTTPHeaderFunc) ClientOption {
+	return func(sc *SSE) {
+		sc.headerFunc = headerFunc
 	}
 }
 
@@ -62,7 +69,7 @@ func NewSSE(baseURL string, options ...ClientOption) (*SSE, error) {
 	smc := &SSE{
 		baseURL:      parsedURL,
 		httpClient:   &http.Client{},
-		responses:    make(map[int64]chan *JSONRPCResponse),
+		responses:    make(map[string]chan *JSONRPCResponse),
 		endpointChan: make(chan struct{}),
 		headers:      make(map[string]string),
 	}
@@ -98,6 +105,11 @@ func (c *SSE) Start(ctx context.Context) error {
 	// set custom http headers
 	for k, v := range c.headers {
 		req.Header.Set(k, v)
+	}
+	if c.headerFunc != nil {
+		for k, v := range c.headerFunc(ctx) {
+			req.Header.Set(k, v)
+		}
 	}
 
 	resp, err := c.httpClient.Do(req)
@@ -200,7 +212,7 @@ func (c *SSE) handleSSEEvent(event, data string) {
 		}
 
 		// Handle notification
-		if baseMessage.ID == nil {
+		if baseMessage.ID.IsNil() {
 			var notification mcp.JSONRPCNotification
 			if err := json.Unmarshal([]byte(data), &notification); err != nil {
 				return
@@ -213,14 +225,17 @@ func (c *SSE) handleSSEEvent(event, data string) {
 			return
 		}
 
+		// Create string key for map lookup
+		idKey := baseMessage.ID.String()
+
 		c.mu.RLock()
-		ch, ok := c.responses[*baseMessage.ID]
+		ch, exists := c.responses[idKey]
 		c.mu.RUnlock()
 
-		if ok {
+		if exists {
 			ch <- &baseMessage
 			c.mu.Lock()
-			delete(c.responses, *baseMessage.ID)
+			delete(c.responses, idKey)
 			c.mu.Unlock()
 		}
 	}
@@ -266,15 +281,23 @@ func (c *SSE) SendRequest(
 	for k, v := range c.headers {
 		req.Header.Set(k, v)
 	}
+	if c.headerFunc != nil {
+		for k, v := range c.headerFunc(ctx) {
+			req.Header.Set(k, v)
+		}
+	}
+
+	// Create string key for map lookup
+	idKey := request.ID.String()
 
 	// Register response channel
 	responseChan := make(chan *JSONRPCResponse, 1)
 	c.mu.Lock()
-	c.responses[request.ID] = responseChan
+	c.responses[idKey] = responseChan
 	c.mu.Unlock()
 	deleteResponseChan := func() {
 		c.mu.Lock()
-		delete(c.responses, request.ID)
+		delete(c.responses, idKey)
 		c.mu.Unlock()
 	}
 
@@ -304,8 +327,11 @@ func (c *SSE) SendRequest(
 	case <-ctx.Done():
 		deleteResponseChan()
 		return nil, ctx.Err()
-	case response := <-responseChan:
-		return response, nil
+	case response, ok := <-responseChan:
+		if ok {
+			return response, nil
+		}
+		return nil, fmt.Errorf("connection has been closed")
 	}
 }
 
@@ -327,7 +353,7 @@ func (c *SSE) Close() error {
 	for _, ch := range c.responses {
 		close(ch)
 	}
-	c.responses = make(map[int64]chan *JSONRPCResponse)
+	c.responses = make(map[string]chan *JSONRPCResponse)
 	c.mu.Unlock()
 
 	return nil
@@ -358,6 +384,11 @@ func (c *SSE) SendNotification(ctx context.Context, notification mcp.JSONRPCNoti
 	// Set custom HTTP headers
 	for k, v := range c.headers {
 		req.Header.Set(k, v)
+	}
+	if c.headerFunc != nil {
+		for k, v := range c.headerFunc(ctx) {
+			req.Header.Set(k, v)
+		}
 	}
 
 	resp, err := c.httpClient.Do(req)

@@ -29,6 +29,7 @@ func TestSSEServer(t *testing.T) {
 
 		if sseServer == nil {
 			t.Error("SSEServer should not be nil")
+			return
 		}
 		if sseServer.server == nil {
 			t.Error("MCPServer should not be nil")
@@ -809,7 +810,16 @@ func TestSSEServer(t *testing.T) {
 				}
 
 				if pingMsg.Method == "ping" {
-					pingID = pingMsg.ID.(float64)
+					idValue, ok := pingMsg.ID.Value().(int64)
+					if ok {
+						pingID = float64(idValue)
+					} else {
+						floatValue, ok := pingMsg.ID.Value().(float64)
+						if !ok {
+							t.Fatalf("Expected ping ID to be number, got %T: %v", pingMsg.ID.Value(), pingMsg.ID.Value())
+						}
+						pingID = floatValue
+					}
 					t.Logf("Received ping with ID: %f", pingID)
 					break // We got the ping, exit the loop
 				}
@@ -1247,7 +1257,7 @@ func TestSSEServer(t *testing.T) {
 			WithHooks(&Hooks{
 				OnAfterInitialize: []OnAfterInitializeFunc{
 					func(ctx context.Context, id any, message *mcp.InitializeRequest, result *mcp.InitializeResult) {
-						result.Result.Meta = map[string]any{"invalid": func() {}} // marshal will fail
+						result.Meta = map[string]any{"invalid": func() {}} // marshal will fail
 					},
 				},
 			}),
