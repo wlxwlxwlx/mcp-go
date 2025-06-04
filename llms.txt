@@ -1,0 +1,8 @@
+# MCP-Go
+
+> A Go implementation of the Model Context Protocol (MCP), enabling seamless integration between LLM applications and external data sources and tools.
+
+## Docs
+
+- [Example](/example): This is an example page.
+- [Getting Started](/getting-started): MCP-Go makes it easy to build Model Context Protocol (MCP) servers in Go. This guide will help you create your first MCP server in just a few minutes.
