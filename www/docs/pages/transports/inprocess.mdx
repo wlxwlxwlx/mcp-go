@@ -1,0 +1,237 @@
+# In-Process Transport
+
+In-process transport enables direct integration of MCP servers within the same process, eliminating network overhead and providing seamless integration for embedded scenarios.
+
+## Use Cases
+
+In-process transport is perfect for:
+
+- **Embedded servers**: MCP functionality within existing applications
+- **Testing and development**: Fast, reliable testing without network overhead
+- **Library integrations**: MCP as a library component
+- **Single-process architectures**: Monolithic applications with MCP capabilities
+
+**Example applications:**
+- Desktop applications with plugin architectures
+- Testing frameworks
+- Embedded analytics engines
+- Game engines with AI tool integration
+
+## Implementation
+
+### Basic In-Process Server
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+
+    "github.com/mark3labs/mcp-go/mcp"
+    "github.com/mark3labs/mcp-go/server"
+    "github.com/mark3labs/mcp-go/client"
+)
+
+func main() {
+    // Create server
+    s := server.NewMCPServer("Calculator Server", "1.0.0",
+        server.WithToolCapabilities(true),
+    )
+
+    // Add calculator tool
+    s.AddTool(
+        mcp.NewTool("calculate",
+            mcp.WithDescription("Perform basic mathematical calculations"),
+            mcp.WithString("operation", 
+                mcp.Required(),
+                mcp.Enum("add", "subtract", "multiply", "divide"),
+                mcp.Description("The operation to perform"),
+            ),
+            mcp.WithNumber("x", mcp.Required(), mcp.Description("First number")),
+            mcp.WithNumber("y", mcp.Required(), mcp.Description("Second number")),
+        ),
+        handleCalculate,
+    )
+
+    // Create in-process client
+    client := client.NewInProcessClient(s)
+    defer client.Close()
+
+    ctx := context.Background()
+
+    // Initialize
+    if err := client.Initialize(ctx); err != nil {
+        log.Fatal(err)
+    }
+
+    // Use the calculator
+    result, err := client.CallTool(ctx, mcp.CallToolRequest{
+        Params: mcp.CallToolRequestParams{
+            Name: "calculate",
+            Arguments: map[string]interface{}{
+                "operation": "add",
+                "x":         10.0,
+                "y":         5.0,
+            },
+        },
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Printf("Result: %s\n", result.Content[0].Text)
+}
+
+func handleCalculate(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+    operation := req.Params.Arguments["operation"].(string)
+    x := req.Params.Arguments["x"].(float64)
+    y := req.Params.Arguments["y"].(float64)
+
+    var result float64
+    switch operation {
+    case "add":
+        result = x + y
+    case "subtract":
+        result = x - y
+    case "multiply":
+        result = x * y
+    case "divide":
+        if y == 0 {
+            return mcp.NewToolResultError("division by zero"), nil
+        }
+        result = x / y
+    default:
+        return nil, fmt.Errorf("unknown operation: %s", operation)
+    }
+
+    return mcp.NewToolResultText(fmt.Sprintf("%.2f", result)), nil
+}
+```
+
+### Embedded Application Integration
+
+```go
+// Embedded MCP server in a larger application
+type Application struct {
+    mcpServer *server.MCPServer
+    mcpClient *client.InProcessClient
+    config    *Config
+}
+
+func NewApplication(config *Config) *Application {
+    app := &Application{
+        config: config,
+    }
+
+    // Create embedded MCP server
+    app.mcpServer = server.NewMCPServer("Embedded Server", "1.0.0",
+        server.WithToolCapabilities(true),
+    )
+
+    // Add application-specific tools
+    app.addApplicationTools()
+
+    // Create in-process client for internal use
+    app.mcpClient = client.NewInProcessClient(app.mcpServer)
+
+    return app
+}
+
+type Config struct {
+    AppName string
+    Debug   bool
+}
+
+func (app *Application) addApplicationTools() {
+    // Application status tool
+    app.mcpServer.AddTool(
+        mcp.NewTool("get_app_status",
+            mcp.WithDescription("Get current application status"),
+        ),
+        func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+            status := map[string]interface{}{
+                "app_name": app.config.AppName,
+                "debug":    app.config.Debug,
+                "status":   "running",
+            }
+            return mcp.NewToolResultJSON(status), nil
+        },
+    )
+
+    // Configuration tool
+    app.mcpServer.AddTool(
+        mcp.NewTool("update_config",
+            mcp.WithDescription("Update application configuration"),
+            mcp.WithString("key", mcp.Required()),
+            mcp.WithString("value", mcp.Required()),
+        ),
+        func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+            key := req.Params.Arguments["key"].(string)
+            value := req.Params.Arguments["value"].(string)
+
+            // Update configuration based on key
+            switch key {
+            case "debug":
+                app.config.Debug = value == "true"
+            case "app_name":
+                app.config.AppName = value
+            default:
+                return mcp.NewToolResultError(fmt.Sprintf("unknown config key: %s", key)), nil
+            }
+
+            return mcp.NewToolResultText(fmt.Sprintf("Updated %s to %s", key, value)), nil
+        },
+    )
+}
+
+func (app *Application) ProcessWithMCP(ctx context.Context, operation string) (interface{}, error) {
+    // Use MCP tools internally for processing
+    result, err := app.mcpClient.CallTool(ctx, mcp.CallToolRequest{
+        Params: mcp.CallToolRequestParams{
+            Name: "calculate",
+            Arguments: map[string]interface{}{
+                "operation": operation,
+                "x":         10.0,
+                "y":         5.0,
+            },
+        },
+    })
+    if err != nil {
+        return nil, err
+    }
+
+    return result.Content[0].Text, nil
+}
+
+// Usage example
+func main() {
+    config := &Config{
+        AppName: "My App",
+        Debug:   true,
+    }
+
+    app := NewApplication(config)
+    ctx := context.Background()
+
+    // Initialize the embedded MCP client
+    if err := app.mcpClient.Initialize(ctx); err != nil {
+        log.Fatal(err)
+    }
+
+    // Use MCP functionality within the application
+    result, err := app.ProcessWithMCP(ctx, "add")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Printf("Application result: %v\n", result)
+}
+```
+
+## Next Steps
+
+- **[Client Development](/clients)** - Build MCP clients for all transports
+- **[HTTP Transport](/transports/http)** - Learn about web-based scenarios
+- **[Server Advanced Features](/servers/advanced)** - Explore production-ready features

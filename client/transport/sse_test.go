@@ -405,6 +405,109 @@ func TestSSE(t *testing.T) {
 		}
 	})
 
+	t.Run("SSEEventWithoutEventField", func(t *testing.T) {
+		// Test that SSE events with only data field (no event field) are processed correctly
+		// This tests the fix for issue #369
+		
+		var messageReceived chan struct{}
+		
+		// Create a custom mock server that sends SSE events without event field
+		sseHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			flusher, ok := w.(http.Flusher)
+			if !ok {
+				http.Error(w, "Streaming unsupported", http.StatusInternalServerError)
+				return
+			}
+
+			// Send initial endpoint event
+			fmt.Fprintf(w, "event: endpoint\ndata: %s\n\n", "/message")
+			flusher.Flush()
+
+			// Wait for message to be received, then send response
+			select {
+			case <-messageReceived:
+				// Send response via SSE WITHOUT event field (only data field)
+				// This should be processed as a "message" event according to SSE spec
+				response := map[string]any{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "test response without event field",
+				}
+				responseBytes, _ := json.Marshal(response)
+				fmt.Fprintf(w, "data: %s\n\n", responseBytes)
+				flusher.Flush()
+			case <-r.Context().Done():
+				return
+			}
+
+			// Keep connection open
+			<-r.Context().Done()
+		})
+
+		// Create message handler
+		messageHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusAccepted)
+			
+			// Signal that message was received
+			close(messageReceived)
+		})
+
+		// Initialize the channel
+		messageReceived = make(chan struct{})
+
+		// Create test server
+		mux := http.NewServeMux()
+		mux.Handle("/", sseHandler)
+		mux.Handle("/message", messageHandler)
+		testServer := httptest.NewServer(mux)
+		defer testServer.Close()
+
+		// Create SSE transport
+		trans, err := NewSSE(testServer.URL)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Start the transport
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		err = trans.Start(ctx)
+		if err != nil {
+			t.Fatalf("Failed to start transport: %v", err)
+		}
+		defer trans.Close()
+
+		// Send a request
+		request := JSONRPCRequest{
+			JSONRPC: "2.0",
+			ID:      mcp.NewRequestId(int64(1)),
+			Method:  "test",
+		}
+
+		// This should succeed because the SSE event without event field should be processed
+		response, err := trans.SendRequest(ctx, request)
+		if err != nil {
+			t.Fatalf("SendRequest failed: %v", err)
+		}
+
+		if response == nil {
+			t.Fatal("Expected response, got nil")
+		}
+
+		// Verify the response
+		var result string
+		if err := json.Unmarshal(response.Result, &result); err != nil {
+			t.Fatalf("Failed to unmarshal result: %v", err)
+		}
+
+		if result != "test response without event field" {
+			t.Errorf("Expected 'test response without event field', got '%s'", result)
+		}
+	})
+
 }
 
 func TestSSEErrors(t *testing.T) {
