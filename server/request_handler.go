@@ -129,6 +129,7 @@ func (s *MCPServer) HandleMessage(
 				err:  &UnparsableMessageError{message: message, err: unmarshalErr, method: baseMessage.Method},
 			}
 		} else {
+			request.Header = header
 			s.hooks.beforeSetLevel(ctx, baseMessage.ID, &request)
 			result, err = s.handleSetLevel(ctx, baseMessage.ID, request)
 		}
