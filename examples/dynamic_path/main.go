@@ -7,8 +7,8 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/mark3labs/mcp-go/server"
+	"github.com/wlxwlxwlx/mcp-go/mcp"
+	"github.com/wlxwlxwlx/mcp-go/server"
 )
 
 func main() {

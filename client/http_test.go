@@ -7,11 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mark3labs/mcp-go/client/transport"
-	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/mark3labs/mcp-go/server"
+	"github.com/wlxwlxwlx/mcp-go/client/transport"
+	"github.com/wlxwlxwlx/mcp-go/mcp"
+	"github.com/wlxwlxwlx/mcp-go/server"
 )
-
 
 func TestHTTPClient(t *testing.T) {
 	hooks := &server.Hooks{}

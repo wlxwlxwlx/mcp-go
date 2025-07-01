@@ -974,7 +974,8 @@ func TestMCPServer_Prompts(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := context.Background()
 			server := NewMCPServer("test-server", "1.0.0", WithPromptCapabilities(true))
-			_ = server.HandleMessage(ctx, []byte(`{
+			header := map[string]string{"Authorization": "Bearer test"}
+			_ = server.HandleMessage(ctx, header, []byte(`{
 				"jsonrpc": "2.0",
 				"id": 1,
 				"method": "initialize"
@@ -994,7 +995,7 @@ func TestMCPServer_Prompts(t *testing.T) {
 				}
 			}
 			assert.Len(t, notifications, tt.expectedNotifications)
-			promptsList := server.HandleMessage(ctx, []byte(`{
+			promptsList := server.HandleMessage(ctx, header, []byte(`{
 				"jsonrpc": "2.0",
 				"id": 1,
 				"method": "prompts/list"
@@ -2017,8 +2018,8 @@ func TestMCPServer_ProtocolNegotiation(t *testing.T) {
 
 			messageBytes, err := json.Marshal(initRequest)
 			assert.NoError(t, err)
-
-			response := server.HandleMessage(context.Background(), messageBytes)
+			header := map[string]string{"Authorization": "Bearer test"}
+			response := server.HandleMessage(context.Background(), header, messageBytes)
 			assert.NotNil(t, response)
 
 			resp, ok := response.(mcp.JSONRPCResponse)

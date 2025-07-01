@@ -12,7 +12,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/wlxwlxwlx/mcp-go/mcp"
-
 )
 
 // sessionTestClient implements the basic ClientSession interface for testing
@@ -601,8 +600,8 @@ func TestMCPServer_CallSessionTool(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to marshal tool request: %v", err)
 	}
-
-	response := server.HandleMessage(sessionCtx, requestBytes)
+	header := map[string]string{"Authorization": "Bearer test"}
+	response := server.HandleMessage(sessionCtx, header, requestBytes)
 	resp, ok := response.(mcp.JSONRPCResponse)
 	assert.True(t, ok)
 
@@ -1026,8 +1025,8 @@ func TestMCPServer_SetLevelNotEnabled(t *testing.T) {
 	}
 	requestBytes, err := json.Marshal(setRequest)
 	require.NoError(t, err)
-
-	response := server.HandleMessage(sessionCtx, requestBytes)
+	header := map[string]string{"Authorization": "Bearer test"}
+	response := server.HandleMessage(sessionCtx, header, requestBytes)
 	errorResponse, ok := response.(mcp.JSONRPCError)
 	assert.True(t, ok)
 
@@ -1070,8 +1069,8 @@ func TestMCPServer_SetLevel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to marshal tool request: %v", err)
 	}
-
-	response := server.HandleMessage(sessionCtx, requestBytes)
+	header := map[string]string{"Authorization": "Bearer test"}
+	response := server.HandleMessage(sessionCtx, header, requestBytes)
 	resp, ok := response.(mcp.JSONRPCResponse)
 	assert.True(t, ok)
 

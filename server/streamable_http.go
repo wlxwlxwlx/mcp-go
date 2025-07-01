@@ -13,8 +13,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/mark3labs/mcp-go/util"
+	"github.com/wlxwlxwlx/mcp-go/mcp"
+	"github.com/wlxwlxwlx/mcp-go/util"
 )
 
 // StreamableHTTPOption defines a function type for configuring StreamableHTTPServer
@@ -309,9 +309,12 @@ func (s *StreamableHTTPServer) handlePost(w http.ResponseWriter, r *http.Request
 			}
 		}
 	}()
-
+	header := make(map[string]string)
+	for k, v := range r.Header {
+		header[k] = v[0]
+	}
 	// Process message through MCPServer
-	response := s.server.HandleMessage(ctx, rawData)
+	response := s.server.HandleMessage(ctx, header, rawData)
 	if response == nil {
 		// For notifications, just send 202 Accepted with no body
 		w.WriteHeader(http.StatusAccepted)
