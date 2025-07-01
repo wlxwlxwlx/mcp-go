@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -970,11 +971,11 @@ func TestMCPServer_Prompts(t *testing.T) {
 			},
 		},
 	}
+	header := map[string]string{"Authorization": "Bearer test"}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := context.Background()
 			server := NewMCPServer("test-server", "1.0.0", WithPromptCapabilities(true))
-			header := map[string]string{"Authorization": "Bearer test"}
 			_ = server.HandleMessage(ctx, header, []byte(`{
 				"jsonrpc": "2.0",
 				"id": 1,
@@ -2018,8 +2019,8 @@ func TestMCPServer_ProtocolNegotiation(t *testing.T) {
 
 			messageBytes, err := json.Marshal(initRequest)
 			assert.NoError(t, err)
-			header := map[string]string{"Authorization": "Bearer test"}
-			response := server.HandleMessage(context.Background(), header, messageBytes)
+
+			response := server.HandleMessage(context.Background(), map[string]string{"Authorization": "Bearer test"}, messageBytes)
 			assert.NotNil(t, response)
 
 			resp, ok := response.(mcp.JSONRPCResponse)
@@ -2036,4 +2037,66 @@ func TestMCPServer_ProtocolNegotiation(t *testing.T) {
 			)
 		})
 	}
+}
+
+func TestMCPServer_HandleWithHeader(t *testing.T) {
+	allowedToolNamesCache := map[string]map[string]struct{}{
+		"test": {
+			"tool1": struct{}{},
+			"tool2": struct{}{},
+		},
+		"test2": {
+			"tool3": struct{}{},
+			"tool4": struct{}{},
+		},
+	}
+	myOnAfterListToolsFunc := func(ctx context.Context, id any, message *mcp.ListToolsRequest, result *mcp.ListToolsResult) {
+		token := strings.TrimPrefix(message.Header["Authorization"], "Bearer ")
+		allowedToolNames := allowedToolNamesCache[token]
+		allowedTools := []mcp.Tool{}
+		for _, tool := range result.Tools {
+			if _, ok := allowedToolNames[tool.Name]; ok {
+				allowedTools = append(allowedTools, tool)
+			}
+		}
+		result.Tools = allowedTools
+	}
+	hooks := &Hooks{}
+	hooks.AddAfterListTools(myOnAfterListToolsFunc)
+	server := NewMCPServer(
+		"test-server",
+		"1.0.0",
+		WithHooks(hooks),
+	)
+	server.AddTool(mcp.NewTool("tool1"),
+		func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return &mcp.CallToolResult{}, nil
+		})
+	server.AddTool(mcp.NewTool("tool2"),
+		func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return &mcp.CallToolResult{}, nil
+		})
+	server.AddTool(mcp.NewTool("tool3"),
+		func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return &mcp.CallToolResult{}, nil
+		})
+	server.AddTool(mcp.NewTool("tool4"),
+		func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return &mcp.CallToolResult{}, nil
+		})
+	server.AddTool(mcp.NewTool("tool5"),
+		func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return &mcp.CallToolResult{}, nil
+		})
+	header := map[string]string{"Authorization": "Bearer test"}
+	response := server.HandleMessage(context.Background(), header, []byte(`{
+		"jsonrpc": "2.0",
+		"id": 1,
+		"method": "tools/list"
+	}`))
+	assert.IsType(t, mcp.JSONRPCResponse{}, response)
+	toolsListResponse := response.(mcp.JSONRPCResponse)
+	assert.IsType(t, mcp.ListToolsResult{}, toolsListResponse.Result)
+	listTools := toolsListResponse.Result.(mcp.ListToolsResult)
+	assert.Equal(t, 2, len(listTools.Tools))
 }
