@@ -3,11 +3,19 @@ package client
 import (
 	"context"
 	"github.com/wlxwlxwlx/mcp-go/client/transport"
+	"net/http"
 	"testing"
 	"time"
 
 	"github.com/wlxwlxwlx/mcp-go/mcp"
 	"github.com/wlxwlxwlx/mcp-go/server"
+)
+
+type contextKey string
+
+const (
+	testHeaderKey     contextKey = "X-Test-Header"
+	testHeaderFuncKey contextKey = "X-Test-Header-Func"
 )
 
 func TestSSEMCPClient(t *testing.T) {
@@ -25,26 +33,44 @@ func TestSSEMCPClient(t *testing.T) {
 		"test-tool",
 		mcp.WithDescription("Test tool"),
 		mcp.WithString("parameter-1", mcp.Description("A string tool parameter")),
-		mcp.WithToolAnnotation(mcp.ToolAnnotation{
-			Title:           "Test Tool Annotation Title",
-			ReadOnlyHint:    true,
-			DestructiveHint: false,
-			IdempotentHint:  true,
-			OpenWorldHint:   false,
-		}),
+		mcp.WithTitleAnnotation("Test Tool Annotation Title"),
+		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithIdempotentHintAnnotation(true),
+		mcp.WithOpenWorldHintAnnotation(false),
 	), func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{
 				mcp.TextContent{
 					Type: "text",
-					Text: "Input parameter: " + request.Params.Arguments["parameter-1"].(string),
+					Text: "Input parameter: " + request.GetArguments()["parameter-1"].(string),
+				},
+			},
+		}, nil
+	})
+	mcpServer.AddTool(mcp.NewTool(
+		"test-tool-for-http-header",
+		mcp.WithDescription("Test tool for http header"),
+	), func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		//  , X-Test-Header-Func
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{
+				mcp.TextContent{
+					Type: "text",
+					Text: "context from header: " + ctx.Value(testHeaderKey).(string) + ", " + ctx.Value(testHeaderFuncKey).(string),
 				},
 			},
 		}, nil
 	})
 
 	// Initialize
-	testServer := server.NewTestServer(mcpServer)
+	testServer := server.NewTestServer(mcpServer,
+		server.WithSSEContextFunc(func(ctx context.Context, r *http.Request) context.Context {
+			ctx = context.WithValue(ctx, testHeaderKey, r.Header.Get("X-Test-Header"))
+			ctx = context.WithValue(ctx, testHeaderFuncKey, r.Header.Get("X-Test-Header-Func"))
+			return ctx
+		}),
+	)
 	defer testServer.Close()
 
 	t.Run("Can create client", func(t *testing.T) {
@@ -111,10 +137,10 @@ func TestSSEMCPClient(t *testing.T) {
 		}
 		testToolAnnotations := (*toolListResult).Tools[0].Annotations
 		if testToolAnnotations.Title != "Test Tool Annotation Title" ||
-			testToolAnnotations.ReadOnlyHint != true ||
-			testToolAnnotations.DestructiveHint != false ||
-			testToolAnnotations.IdempotentHint != true ||
-			testToolAnnotations.OpenWorldHint != false {
+			*testToolAnnotations.ReadOnlyHint != true ||
+			*testToolAnnotations.DestructiveHint != false ||
+			*testToolAnnotations.IdempotentHint != true ||
+			*testToolAnnotations.OpenWorldHint != false {
 			t.Errorf("The annotations of the tools are invalid")
 		}
 	})
@@ -238,7 +264,7 @@ func TestSSEMCPClient(t *testing.T) {
 
 		request := mcp.CallToolRequest{}
 		request.Params.Name = "test-tool"
-		request.Params.Arguments = map[string]interface{}{
+		request.Params.Arguments = map[string]any{
 			"parameter-1": "value1",
 		}
 
@@ -249,6 +275,58 @@ func TestSSEMCPClient(t *testing.T) {
 
 		if len(result.Content) != 1 {
 			t.Errorf("Expected 1 content item, got %d", len(result.Content))
+		}
+	})
+
+	t.Run("CallTool with customized header", func(t *testing.T) {
+		client, err := NewSSEMCPClient(testServer.URL+"/sse",
+			WithHeaders(map[string]string{
+				"X-Test-Header": "test-header-value",
+			}),
+			WithHeaderFunc(func(ctx context.Context) map[string]string {
+				return map[string]string{
+					"X-Test-Header-Func": "test-header-func-value",
+				}
+			}),
+		)
+		if err != nil {
+			t.Fatalf("Failed to create client: %v", err)
+		}
+		defer client.Close()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		if err := client.Start(ctx); err != nil {
+			t.Fatalf("Failed to start client: %v", err)
+		}
+
+		// Initialize
+		initRequest := mcp.InitializeRequest{}
+		initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
+		initRequest.Params.ClientInfo = mcp.Implementation{
+			Name:    "test-client",
+			Version: "1.0.0",
+		}
+
+		_, err = client.Initialize(ctx, initRequest)
+		if err != nil {
+			t.Fatalf("Failed to initialize: %v", err)
+		}
+
+		request := mcp.CallToolRequest{}
+		request.Params.Name = "test-tool-for-http-header"
+
+		result, err := client.CallTool(ctx, request)
+		if err != nil {
+			t.Fatalf("CallTool failed: %v", err)
+		}
+
+		if len(result.Content) != 1 {
+			t.Errorf("Expected 1 content item, got %d", len(result.Content))
+		}
+		if result.Content[0].(mcp.TextContent).Text != "context from header: test-header-value, test-header-func-value" {
+			t.Errorf("Got %q, want %q", result.Content[0].(mcp.TextContent).Text, "context from header: test-header-value, test-header-func-value")
 		}
 	})
 }

@@ -44,6 +44,17 @@ func TestRaceConditions(t *testing.T) {
 		})
 	})
 
+	runConcurrentOperation(&wg, testDuration, "delete-prompts", func() {
+		name := fmt.Sprintf("delete-prompt-%d", time.Now().UnixNano())
+		srv.AddPrompt(mcp.Prompt{
+			Name:        name,
+			Description: "Temporary prompt",
+		}, func(ctx context.Context, req mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
+			return &mcp.GetPromptResult{}, nil
+		})
+		srv.DeletePrompts(name)
+	})
+
 	runConcurrentOperation(&wg, testDuration, "add-tools", func() {
 		name := fmt.Sprintf("tool-%d", time.Now().UnixNano())
 		srv.AddTool(mcp.Tool{
@@ -98,7 +109,7 @@ func TestRaceConditions(t *testing.T) {
 	runConcurrentOperation(&wg, testDuration, "call-tools", func() {
 		req := mcp.CallToolRequest{}
 		req.Params.Name = "persistent-tool"
-		req.Params.Arguments = map[string]interface{}{"param": "test"}
+		req.Params.Arguments = map[string]any{"param": "test"}
 		result, reqErr := srv.handleToolCall(ctx, "123", req)
 		require.Nil(t, reqErr, "Tool call operation should not return an error")
 		require.NotNil(t, result, "Tool call result should not be nil")
@@ -126,7 +137,12 @@ func TestRaceConditions(t *testing.T) {
 }
 
 // Helper function to run an operation concurrently for a specified duration
-func runConcurrentOperation(wg *sync.WaitGroup, duration time.Duration, name string, operation func()) {
+func runConcurrentOperation(
+	wg *sync.WaitGroup,
+	duration time.Duration,
+	_ string,
+	operation func(),
+) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()

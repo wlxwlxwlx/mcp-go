@@ -7,6 +7,11 @@ import (
 	"github.com/wlxwlxwlx/mcp-go/mcp"
 )
 
+// HTTPHeaderFunc is a function that extracts header entries from the given context
+// and returns them as key-value pairs. This is typically used to add context values
+// as HTTP headers in outgoing requests.
+type HTTPHeaderFunc func(context.Context) map[string]string
+
 // Interface for the transport layer.
 type Interface interface {
 	// Start the connection. Start should only be called once.
@@ -27,15 +32,15 @@ type Interface interface {
 }
 
 type JSONRPCRequest struct {
-	JSONRPC string `json:"jsonrpc"`
-	ID      int64  `json:"id"`
-	Method  string `json:"method"`
-	Params  any    `json:"params,omitempty"`
+	JSONRPC string        `json:"jsonrpc"`
+	ID      mcp.RequestId `json:"id"`
+	Method  string        `json:"method"`
+	Params  any           `json:"params,omitempty"`
 }
 
 type JSONRPCResponse struct {
 	JSONRPC string          `json:"jsonrpc"`
-	ID      *int64          `json:"id"`
+	ID      mcp.RequestId   `json:"id"`
 	Result  json.RawMessage `json:"result"`
 	Error   *struct {
 		Code    int             `json:"code"`

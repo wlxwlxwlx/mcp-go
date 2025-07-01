@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"runtime"
 	"sync"
 	"testing"
@@ -19,25 +18,41 @@ func compileTestServer(outputPath string) error {
 	cmd := exec.Command(
 		"go",
 		"build",
+		"-buildmode=pie",
 		"-o",
 		outputPath,
 		"../../testdata/mockstdio_server.go",
 	)
+	tmpCache, _ := os.MkdirTemp("", "gocache")
+	cmd.Env = append(os.Environ(), "GOCACHE="+tmpCache)
+
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("compilation failed: %v\nOutput: %s", err, output)
+	}
+	// Verify the binary was actually created
+	if _, err := os.Stat(outputPath); os.IsNotExist(err) {
+		return fmt.Errorf("mock server binary not found at %s after compilation", outputPath)
 	}
 	return nil
 }
 
 func TestStdio(t *testing.T) {
-	// Compile mock server
-	mockServerPath := filepath.Join(os.TempDir(), "mockstdio_server")
+	// Create a temporary file for the mock server
+	tempFile, err := os.CreateTemp("", "mockstdio_server")
+	if err != nil {
+		t.Fatalf("Failed to create temp file: %v", err)
+	}
+	tempFile.Close()
+	mockServerPath := tempFile.Name()
+
 	// Add .exe suffix on Windows
 	if runtime.GOOS == "windows" {
+		os.Remove(mockServerPath) // Remove the empty file first
 		mockServerPath += ".exe"
 	}
-	if err := compileTestServer(mockServerPath); err != nil {
-		t.Fatalf("Failed to compile mock server: %v", err)
+
+	if compileErr := compileTestServer(mockServerPath); compileErr != nil {
+		t.Fatalf("Failed to compile mock server: %v", compileErr)
 	}
 	defer os.Remove(mockServerPath)
 
@@ -48,24 +63,24 @@ func TestStdio(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	err := stdio.Start(ctx)
-	if err != nil {
-		t.Fatalf("Failed to start Stdio transport: %v", err)
+	startErr := stdio.Start(ctx)
+	if startErr != nil {
+		t.Fatalf("Failed to start Stdio transport: %v", startErr)
 	}
 	defer stdio.Close()
 
 	t.Run("SendRequest", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(context.Background(), 5000000000*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
-		params := map[string]interface{}{
+		params := map[string]any{
 			"string": "hello world",
-			"array":  []interface{}{1, 2, 3},
+			"array":  []any{1, 2, 3},
 		}
 
 		request := JSONRPCRequest{
 			JSONRPC: "2.0",
-			ID:      1,
+			ID:      mcp.NewRequestId(int64(1)),
 			Method:  "debug/echo",
 			Params:  params,
 		}
@@ -78,10 +93,10 @@ func TestStdio(t *testing.T) {
 
 		// Parse the result to verify echo
 		var result struct {
-			JSONRPC string                 `json:"jsonrpc"`
-			ID      int64                  `json:"id"`
-			Method  string                 `json:"method"`
-			Params  map[string]interface{} `json:"params"`
+			JSONRPC string         `json:"jsonrpc"`
+			ID      mcp.RequestId  `json:"id"`
+			Method  string         `json:"method"`
+			Params  map[string]any `json:"params"`
 		}
 
 		if err := json.Unmarshal(response.Result, &result); err != nil {
@@ -92,8 +107,11 @@ func TestStdio(t *testing.T) {
 		if result.JSONRPC != "2.0" {
 			t.Errorf("Expected JSONRPC value '2.0', got '%s'", result.JSONRPC)
 		}
-		if result.ID != 1 {
-			t.Errorf("Expected ID 1, got %d", result.ID)
+		idValue, ok := result.ID.Value().(int64)
+		if !ok {
+			t.Errorf("Expected ID to be int64, got %T", result.ID.Value())
+		} else if idValue != 1 {
+			t.Errorf("Expected ID 1, got %d", idValue)
 		}
 		if result.Method != "debug/echo" {
 			t.Errorf("Expected method 'debug/echo', got '%s'", result.Method)
@@ -103,7 +121,7 @@ func TestStdio(t *testing.T) {
 			t.Errorf("Expected string 'hello world', got %v", result.Params["string"])
 		}
 
-		if arr, ok := result.Params["array"].([]interface{}); !ok || len(arr) != 3 {
+		if arr, ok := result.Params["array"].([]any); !ok || len(arr) != 3 {
 			t.Errorf("Expected array with 3 items, got %v", result.Params["array"])
 		}
 	})
@@ -116,7 +134,7 @@ func TestStdio(t *testing.T) {
 		// Prepare a request
 		request := JSONRPCRequest{
 			JSONRPC: "2.0",
-			ID:      3,
+			ID:      mcp.NewRequestId(int64(3)),
 			Method:  "debug/echo",
 		}
 
@@ -149,7 +167,7 @@ func TestStdio(t *testing.T) {
 			Notification: mcp.Notification{
 				Method: "debug/echo_notification",
 				Params: mcp.NotificationParams{
-					AdditionalFields: map[string]interface{}{"test": "value"},
+					AdditionalFields: map[string]any{"test": "value"},
 				},
 			},
 		}
@@ -196,9 +214,9 @@ func TestStdio(t *testing.T) {
 				// Each request has a unique ID and payload
 				request := JSONRPCRequest{
 					JSONRPC: "2.0",
-					ID:      int64(100 + idx),
+					ID:      mcp.NewRequestId(int64(100 + idx)),
 					Method:  "debug/echo",
-					Params: map[string]interface{}{
+					Params: map[string]any{
 						"requestIndex": idx,
 						"timestamp":    time.Now().UnixNano(),
 					},
@@ -221,17 +239,27 @@ func TestStdio(t *testing.T) {
 				continue
 			}
 
-			if responses[i] == nil || responses[i].ID == nil || *responses[i].ID != int64(100+i) {
-				t.Errorf("Request %d: Expected ID %d, got %v", i, 100+i, responses[i])
+			if responses[i] == nil {
+				t.Errorf("Request %d: Response is nil", i)
+				continue
+			}
+
+			expectedId := int64(100 + i)
+			idValue, ok := responses[i].ID.Value().(int64)
+			if !ok {
+				t.Errorf("Request %d: Expected ID to be int64, got %T", i, responses[i].ID.Value())
+				continue
+			} else if idValue != expectedId {
+				t.Errorf("Request %d: Expected ID %d, got %d", i, expectedId, idValue)
 				continue
 			}
 
 			// Parse the result to verify echo
 			var result struct {
-				JSONRPC string                 `json:"jsonrpc"`
-				ID      int64                  `json:"id"`
-				Method  string                 `json:"method"`
-				Params  map[string]interface{} `json:"params"`
+				JSONRPC string         `json:"jsonrpc"`
+				ID      mcp.RequestId  `json:"id"`
+				Method  string         `json:"method"`
+				Params  map[string]any `json:"params"`
 			}
 
 			if err := json.Unmarshal(responses[i].Result, &result); err != nil {
@@ -240,8 +268,11 @@ func TestStdio(t *testing.T) {
 			}
 
 			// Verify data matches what was sent
-			if result.ID != int64(100+i) {
-				t.Errorf("Request %d: Expected echoed ID %d, got %d", i, 100+i, result.ID)
+			idValue, ok = result.ID.Value().(int64)
+			if !ok {
+				t.Errorf("Request %d: Expected ID to be int64, got %T", i, result.ID.Value())
+			} else if idValue != int64(100+i) {
+				t.Errorf("Request %d: Expected echoed ID %d, got %d", i, 100+i, idValue)
 			}
 
 			if result.Method != "debug/echo" {
@@ -256,11 +287,10 @@ func TestStdio(t *testing.T) {
 	})
 
 	t.Run("ResponseError", func(t *testing.T) {
-
 		// Prepare a request
 		request := JSONRPCRequest{
 			JSONRPC: "2.0",
-			ID:      100,
+			ID:      mcp.NewRequestId(int64(100)),
 			Method:  "debug/echo_error_string",
 		}
 
@@ -282,11 +312,72 @@ func TestStdio(t *testing.T) {
 		if responseError.Method != "debug/echo_error_string" {
 			t.Errorf("Expected method 'debug/echo_error_string', got '%s'", responseError.Method)
 		}
-		if responseError.ID != 100 {
-			t.Errorf("Expected ID 100, got %d", responseError.ID)
+		idValue, ok := responseError.ID.Value().(int64)
+		if !ok {
+			t.Errorf("Expected ID to be int64, got %T", responseError.ID.Value())
+		} else if idValue != 100 {
+			t.Errorf("Expected ID 100, got %d", idValue)
 		}
 		if responseError.JSONRPC != "2.0" {
 			t.Errorf("Expected JSONRPC '2.0', got '%s'", responseError.JSONRPC)
+		}
+	})
+
+	t.Run("SendRequestWithStringID", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		params := map[string]any{
+			"string": "string id test",
+			"array":  []any{4, 5, 6},
+		}
+
+		// Use a string ID instead of an integer
+		request := JSONRPCRequest{
+			JSONRPC: "2.0",
+			ID:      mcp.NewRequestId("request-123"),
+			Method:  "debug/echo",
+			Params:  params,
+		}
+
+		response, err := stdio.SendRequest(ctx, request)
+		if err != nil {
+			t.Fatalf("SendRequest failed: %v", err)
+		}
+
+		var result struct {
+			JSONRPC string         `json:"jsonrpc"`
+			ID      mcp.RequestId  `json:"id"`
+			Method  string         `json:"method"`
+			Params  map[string]any `json:"params"`
+		}
+
+		if err := json.Unmarshal(response.Result, &result); err != nil {
+			t.Fatalf("Failed to unmarshal result: %v", err)
+		}
+
+		if result.JSONRPC != "2.0" {
+			t.Errorf("Expected JSONRPC value '2.0', got '%s'", result.JSONRPC)
+		}
+
+		// Verify the ID is a string and has the expected value
+		idValue, ok := result.ID.Value().(string)
+		if !ok {
+			t.Errorf("Expected ID to be string, got %T", result.ID.Value())
+		} else if idValue != "request-123" {
+			t.Errorf("Expected ID 'request-123', got '%s'", idValue)
+		}
+
+		if result.Method != "debug/echo" {
+			t.Errorf("Expected method 'debug/echo', got '%s'", result.Method)
+		}
+
+		if str, ok := result.Params["string"].(string); !ok || str != "string id test" {
+			t.Errorf("Expected string 'string id test', got %v", result.Params["string"])
+		}
+
+		if arr, ok := result.Params["array"].([]any); !ok || len(arr) != 3 {
+			t.Errorf("Expected array with 3 items, got %v", result.Params["array"])
 		}
 	})
 
@@ -307,13 +398,22 @@ func TestStdioErrors(t *testing.T) {
 	})
 
 	t.Run("RequestBeforeStart", func(t *testing.T) {
-		mockServerPath := filepath.Join(os.TempDir(), "mockstdio_server")
+		// Create a temporary file for the mock server
+		tempFile, err := os.CreateTemp("", "mockstdio_server")
+		if err != nil {
+			t.Fatalf("Failed to create temp file: %v", err)
+		}
+		tempFile.Close()
+		mockServerPath := tempFile.Name()
+
 		// Add .exe suffix on Windows
 		if runtime.GOOS == "windows" {
+			os.Remove(mockServerPath) // Remove the empty file first
 			mockServerPath += ".exe"
 		}
-		if err := compileTestServer(mockServerPath); err != nil {
-			t.Fatalf("Failed to compile mock server: %v", err)
+
+		if compileErr := compileTestServer(mockServerPath); compileErr != nil {
+			t.Fatalf("Failed to compile mock server: %v", compileErr)
 		}
 		defer os.Remove(mockServerPath)
 
@@ -322,29 +422,37 @@ func TestStdioErrors(t *testing.T) {
 		// Prepare a request
 		request := JSONRPCRequest{
 			JSONRPC: "2.0",
-			ID:      99,
+			ID:      mcp.NewRequestId(int64(99)),
 			Method:  "ping",
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 		defer cancel()
-		_, err := uninitiatedStdio.SendRequest(ctx, request)
-		if err == nil {
+		_, reqErr := uninitiatedStdio.SendRequest(ctx, request)
+		if reqErr == nil {
 			t.Errorf("Expected SendRequest to panic before Start(), but it didn't")
-		} else if err.Error() != "stdio client not started" {
-			t.Errorf("Expected error 'stdio client not started', got: %v", err)
+		} else if reqErr.Error() != "stdio client not started" {
+			t.Errorf("Expected error 'stdio client not started', got: %v", reqErr)
 		}
 	})
 
 	t.Run("RequestAfterClose", func(t *testing.T) {
-		// Compile mock server
-		mockServerPath := filepath.Join(os.TempDir(), "mockstdio_server")
+		// Create a temporary file for the mock server
+		tempFile, err := os.CreateTemp("", "mockstdio_server")
+		if err != nil {
+			t.Fatalf("Failed to create temp file: %v", err)
+		}
+		tempFile.Close()
+		mockServerPath := tempFile.Name()
+
 		// Add .exe suffix on Windows
 		if runtime.GOOS == "windows" {
+			os.Remove(mockServerPath) // Remove the empty file first
 			mockServerPath += ".exe"
 		}
-		if err := compileTestServer(mockServerPath); err != nil {
-			t.Fatalf("Failed to compile mock server: %v", err)
+
+		if compileErr := compileTestServer(mockServerPath); compileErr != nil {
+			t.Fatalf("Failed to compile mock server: %v", compileErr)
 		}
 		defer os.Remove(mockServerPath)
 
@@ -353,8 +461,8 @@ func TestStdioErrors(t *testing.T) {
 
 		// Start the transport
 		ctx := context.Background()
-		if err := stdio.Start(ctx); err != nil {
-			t.Fatalf("Failed to start Stdio transport: %v", err)
+		if startErr := stdio.Start(ctx); startErr != nil {
+			t.Fatalf("Failed to start Stdio transport: %v", startErr)
 		}
 
 		// Close the transport - ignore errors like "broken pipe" since the process might exit already
@@ -366,12 +474,12 @@ func TestStdioErrors(t *testing.T) {
 		// Try to send a request after close
 		request := JSONRPCRequest{
 			JSONRPC: "2.0",
-			ID:      1,
+			ID:      mcp.NewRequestId(int64(1)),
 			Method:  "ping",
 		}
 
-		_, err := stdio.SendRequest(ctx, request)
-		if err == nil {
+		_, sendErr := stdio.SendRequest(ctx, request)
+		if sendErr == nil {
 			t.Errorf("Expected error when sending request after close, got nil")
 		}
 	})

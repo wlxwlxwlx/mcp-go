@@ -3,11 +3,20 @@ package client
 import (
 	"fmt"
 	"github.com/wlxwlxwlx/mcp-go/client/transport"
+	"net/http"
 	"net/url"
 )
 
 func WithHeaders(headers map[string]string) transport.ClientOption {
 	return transport.WithHeaders(headers)
+}
+
+func WithHeaderFunc(headerFunc transport.HTTPHeaderFunc) transport.ClientOption {
+	return transport.WithHeaderFunc(headerFunc)
+}
+
+func WithHTTPClient(httpClient *http.Client) transport.ClientOption {
+	return transport.WithHTTPClient(httpClient)
 }
 
 // NewSSEMCPClient creates a new SSE-based MCP client with the given base URL.

@@ -2,14 +2,17 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/wlxwlxwlx/mcp-go/mcp"
+
 )
 
 // sessionTestClient implements the basic ClientSession interface for testing
@@ -97,9 +100,85 @@ func (f *sessionTestClientWithTools) SetSessionTools(tools map[string]ServerTool
 	f.sessionTools = toolsCopy
 }
 
-// Verify that both implementations satisfy their respective interfaces
-var _ ClientSession = &sessionTestClient{}
-var _ SessionWithTools = &sessionTestClientWithTools{}
+// sessionTestClientWithClientInfo implements the SessionWithClientInfo interface for testing
+type sessionTestClientWithClientInfo struct {
+	sessionID           string
+	notificationChannel chan mcp.JSONRPCNotification
+	initialized         bool
+	clientInfo          atomic.Value
+}
+
+func (f *sessionTestClientWithClientInfo) SessionID() string {
+	return f.sessionID
+}
+
+func (f *sessionTestClientWithClientInfo) NotificationChannel() chan<- mcp.JSONRPCNotification {
+	return f.notificationChannel
+}
+
+func (f *sessionTestClientWithClientInfo) Initialize() {
+	f.initialized = true
+}
+
+func (f *sessionTestClientWithClientInfo) Initialized() bool {
+	return f.initialized
+}
+
+func (f *sessionTestClientWithClientInfo) GetClientInfo() mcp.Implementation {
+	if value := f.clientInfo.Load(); value != nil {
+		if clientInfo, ok := value.(mcp.Implementation); ok {
+			return clientInfo
+		}
+	}
+	return mcp.Implementation{}
+}
+
+func (f *sessionTestClientWithClientInfo) SetClientInfo(clientInfo mcp.Implementation) {
+	f.clientInfo.Store(clientInfo)
+}
+
+// sessionTestClientWithTools implements the SessionWithLogging interface for testing
+type sessionTestClientWithLogging struct {
+	sessionID           string
+	notificationChannel chan mcp.JSONRPCNotification
+	initialized         bool
+	loggingLevel        atomic.Value
+}
+
+func (f *sessionTestClientWithLogging) SessionID() string {
+	return f.sessionID
+}
+
+func (f *sessionTestClientWithLogging) NotificationChannel() chan<- mcp.JSONRPCNotification {
+	return f.notificationChannel
+}
+
+func (f *sessionTestClientWithLogging) Initialize() {
+	// set default logging level
+	f.loggingLevel.Store(mcp.LoggingLevelError)
+	f.initialized = true
+}
+
+func (f *sessionTestClientWithLogging) Initialized() bool {
+	return f.initialized
+}
+
+func (f *sessionTestClientWithLogging) SetLogLevel(level mcp.LoggingLevel) {
+	f.loggingLevel.Store(level)
+}
+
+func (f *sessionTestClientWithLogging) GetLogLevel() mcp.LoggingLevel {
+	level := f.loggingLevel.Load()
+	return level.(mcp.LoggingLevel)
+}
+
+// Verify that all implementations satisfy their respective interfaces
+var (
+	_ ClientSession         = (*sessionTestClient)(nil)
+	_ SessionWithTools      = (*sessionTestClientWithTools)(nil)
+	_ SessionWithLogging    = (*sessionTestClientWithLogging)(nil)
+	_ SessionWithClientInfo = (*sessionTestClientWithClientInfo)(nil)
+)
 
 func TestSessionWithTools_Integration(t *testing.T) {
 	server := NewMCPServer("test-server", "1.0.0", WithToolCapabilities(true))
@@ -129,7 +208,7 @@ func TestSessionWithTools_Integration(t *testing.T) {
 	// Test that we can access the session-specific tool
 	testReq := mcp.CallToolRequest{}
 	testReq.Params.Name = "session-tool"
-	testReq.Params.Arguments = map[string]interface{}{}
+	testReq.Params.Arguments = map[string]any{}
 
 	// Call using session context
 	sessionCtx := server.WithContext(context.Background(), session)
@@ -294,6 +373,246 @@ func TestMCPServer_AddSessionTool(t *testing.T) {
 	// Verify tool was added to session
 	assert.Len(t, session.GetSessionTools(), 1)
 	assert.Contains(t, session.GetSessionTools(), "session-tool-helper")
+}
+
+func TestMCPServer_AddSessionToolsUninitialized(t *testing.T) {
+	// This test verifies that adding tools to an uninitialized session works correctly.
+	//
+	// This scenario can occur when tools are added during the session registration hook,
+	// before the session is fully initialized. In this case, we should:
+	// 1. Successfully add the tools to the session
+	// 2. Not attempt to send a notification (since the session isn't ready)
+	// 3. Have the tools available once the session is initialized
+	// 4. Not trigger any error hooks when adding tools to uninitialized sessions
+
+	// Set up error hook to track if it's called
+	errorChan := make(chan error)
+	hooks := &Hooks{}
+	hooks.AddOnError(
+		func(ctx context.Context, id any, method mcp.MCPMethod, message any, err error) {
+			errorChan <- err
+		},
+	)
+
+	server := NewMCPServer("test-server", "1.0.0",
+		WithToolCapabilities(true),
+		WithHooks(hooks),
+	)
+	ctx := context.Background()
+
+	// Create an uninitialized session
+	sessionChan := make(chan mcp.JSONRPCNotification, 1)
+	session := &sessionTestClientWithTools{
+		sessionID:           "uninitialized-session",
+		notificationChannel: sessionChan,
+		initialized:         false,
+	}
+
+	// Register the session
+	err := server.RegisterSession(ctx, session)
+	require.NoError(t, err)
+
+	// Add session-specific tools to the uninitialized session
+	err = server.AddSessionTools(session.SessionID(),
+		ServerTool{Tool: mcp.NewTool("uninitialized-tool")},
+	)
+	require.NoError(t, err)
+
+	// Verify no errors
+	select {
+	case err := <-errorChan:
+		t.Error("Expected no errors, but OnError called with: ", err)
+	case <-time.After(25 * time.Millisecond): // no errors
+	}
+
+	// Verify no notification was sent (channel should be empty)
+	select {
+	case <-sessionChan:
+		t.Error("Expected no notification to be sent for uninitialized session")
+	default: // no notifications
+	}
+
+	// Verify tool was added to session
+	assert.Len(t, session.GetSessionTools(), 1)
+	assert.Contains(t, session.GetSessionTools(), "uninitialized-tool")
+
+	// Initialize the session
+	session.Initialize()
+
+	// Now verify that subsequent tool additions will send notifications
+	err = server.AddSessionTools(session.SessionID(),
+		ServerTool{Tool: mcp.NewTool("initialized-tool")},
+	)
+	require.NoError(t, err)
+
+	// Verify no errors
+	select {
+	case err := <-errorChan:
+		t.Error("Expected no errors, but OnError called with:", err)
+	case <-time.After(200 * time.Millisecond): // No errors
+	}
+
+	// Verify notification was sent for the initialized session
+	select {
+	case notification := <-sessionChan:
+		assert.Equal(t, "notifications/tools/list_changed", notification.Method)
+	case <-time.After(100 * time.Millisecond):
+		t.Error("Timeout waiting for expected notifications/tools/list_changed notification")
+	}
+
+	// Verify both tools are available
+	assert.Len(t, session.GetSessionTools(), 2)
+	assert.Contains(t, session.GetSessionTools(), "uninitialized-tool")
+	assert.Contains(t, session.GetSessionTools(), "initialized-tool")
+}
+
+func TestMCPServer_DeleteSessionToolsUninitialized(t *testing.T) {
+	// This test verifies that deleting tools from an uninitialized session works correctly.
+	//
+	// This is a bit of a weird edge case but can happen if tools are added and
+	// deleted during the RegisterSession hook.
+	//
+	// In this case, we should:
+	// 1. Successfully delete the tools from the session
+	// 2. Not attempt to send a notification (since the session isn't ready)
+	// 3. Have the tools properly deleted once the session is initialized
+	// 4. Not trigger any error hooks when deleting tools from uninitialized sessions
+
+	// Set up error hook to track if it's called
+	errorChan := make(chan error)
+	hooks := &Hooks{}
+	hooks.AddOnError(
+		func(ctx context.Context, id any, method mcp.MCPMethod, message any, err error) {
+			errorChan <- err
+		},
+	)
+
+	server := NewMCPServer("test-server", "1.0.0",
+		WithToolCapabilities(true),
+		WithHooks(hooks),
+	)
+	ctx := context.Background()
+
+	// Create an uninitialized session with some tools
+	sessionChan := make(chan mcp.JSONRPCNotification, 1)
+	session := &sessionTestClientWithTools{
+		sessionID:           "uninitialized-session",
+		notificationChannel: sessionChan,
+		initialized:         false,
+		sessionTools: map[string]ServerTool{
+			"tool-to-delete": {Tool: mcp.NewTool("tool-to-delete")},
+			"tool-to-keep":   {Tool: mcp.NewTool("tool-to-keep")},
+		},
+	}
+
+	// Register the session
+	err := server.RegisterSession(ctx, session)
+	require.NoError(t, err)
+
+	// Delete a tool from the uninitialized session
+	err = server.DeleteSessionTools(session.SessionID(), "tool-to-delete")
+	require.NoError(t, err)
+
+	select {
+	case err := <-errorChan:
+		t.Errorf("Expected error hooks not to be called, got error: %v", err)
+	case <-time.After(25 * time.Millisecond): // No errors
+	}
+
+	// Verify no notification was sent (channel should be empty)
+	select {
+	case <-sessionChan:
+		t.Error("Expected no notification to be sent for uninitialized session")
+	default:
+		// This is the expected case - no notification should be sent
+	}
+
+	// Verify tool was deleted from session
+	assert.Len(t, session.GetSessionTools(), 1)
+	assert.NotContains(t, session.GetSessionTools(), "tool-to-delete")
+	assert.Contains(t, session.GetSessionTools(), "tool-to-keep")
+
+	// Initialize the session
+	session.Initialize()
+
+	// Now verify that subsequent tool deletions will send notifications
+	err = server.DeleteSessionTools(session.SessionID(), "tool-to-keep")
+	require.NoError(t, err)
+
+	select {
+	case err := <-errorChan:
+		t.Errorf("Expected error hooks not to be called, got error: %v", err)
+	case <-time.After(200 * time.Millisecond): // No errors
+	}
+
+	// Verify notification was sent for the initialized session
+	select {
+	case notification := <-sessionChan:
+		assert.Equal(t, "notifications/tools/list_changed", notification.Method)
+	case <-time.After(100 * time.Millisecond):
+		t.Error("Expected notification not received for initialized session")
+	}
+
+	// Verify all tools are deleted
+	assert.Len(t, session.GetSessionTools(), 0)
+}
+
+func TestMCPServer_CallSessionTool(t *testing.T) {
+	server := NewMCPServer("test-server", "1.0.0", WithToolCapabilities(true))
+
+	// Add global tool
+	server.AddTool(mcp.NewTool("test_tool"), func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return mcp.NewToolResultText("global result"), nil
+	})
+
+	// Create a session
+	sessionChan := make(chan mcp.JSONRPCNotification, 10)
+	session := &sessionTestClientWithTools{
+		sessionID:           "session-1",
+		notificationChannel: sessionChan,
+		initialized:         true,
+	}
+
+	// Register the session
+	err := server.RegisterSession(context.Background(), session)
+	require.NoError(t, err)
+
+	// Add session-specific tool with the same name to override the global tool
+	err = server.AddSessionTool(
+		session.SessionID(),
+		mcp.NewTool("test_tool"),
+		func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return mcp.NewToolResultText("session result"), nil
+		},
+	)
+	require.NoError(t, err)
+
+	// Call the tool using session context
+	sessionCtx := server.WithContext(context.Background(), session)
+	toolRequest := map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name": "test_tool",
+		},
+	}
+	requestBytes, err := json.Marshal(toolRequest)
+	if err != nil {
+		t.Fatalf("Failed to marshal tool request: %v", err)
+	}
+
+	response := server.HandleMessage(sessionCtx, requestBytes)
+	resp, ok := response.(mcp.JSONRPCResponse)
+	assert.True(t, ok)
+
+	callToolResult, ok := resp.Result.(mcp.CallToolResult)
+	assert.True(t, ok)
+
+	// Since we specify a tool with the same name for current session, the expected text should be "session result"
+	if text := callToolResult.Content[0].(mcp.TextContent).Text; text != "session result" {
+		t.Errorf("Expected result 'session result', got %q", text)
+	}
 }
 
 func TestMCPServer_DeleteSessionTools(t *testing.T) {
@@ -488,7 +807,7 @@ func TestMCPServer_NotificationChannelBlocked(t *testing.T) {
 
 		errorCaptured = true
 		// Extract session ID and method from the error message metadata
-		if msgMap, ok := message.(map[string]interface{}); ok {
+		if msgMap, ok := message.(map[string]any); ok {
 			if sid, ok := msgMap["sessionID"].(string); ok {
 				errorSessionID = sid
 			}
@@ -516,7 +835,8 @@ func TestMCPServer_NotificationChannelBlocked(t *testing.T) {
 	require.NoError(t, err)
 
 	// Fill the buffer first to ensure it gets blocked
-	server.SendNotificationToSpecificClient(session.SessionID(), "first-message", nil)
+	err = server.SendNotificationToSpecificClient(session.SessionID(), "first-message", nil)
+	require.NoError(t, err)
 
 	// This will cause the buffer to block
 	err = server.SendNotificationToSpecificClient(session.SessionID(), "blocked-message", nil)
@@ -561,4 +881,250 @@ func TestMCPServer_NotificationChannelBlocked(t *testing.T) {
 	assert.True(t, localErrorCaptured, "Error hook should have been called for broadcast")
 	assert.Equal(t, "blocked-session", localErrorSessionID, "Session ID should be captured in the error hook")
 	assert.Equal(t, "broadcast-message", localErrorMethod, "Method should be captured in the error hook")
+}
+
+func TestMCPServer_SessionToolCapabilitiesBehavior(t *testing.T) {
+	tests := []struct {
+		name           string
+		serverOptions  []ServerOption
+		validateServer func(t *testing.T, s *MCPServer, session *sessionTestClientWithTools)
+	}{
+		{
+			name:          "no tool capabilities provided",
+			serverOptions: []ServerOption{
+				// No WithToolCapabilities
+			},
+			validateServer: func(t *testing.T, s *MCPServer, session *sessionTestClientWithTools) {
+				s.capabilitiesMu.RLock()
+				defer s.capabilitiesMu.RUnlock()
+
+				require.NotNil(t, s.capabilities.tools, "tools capability should be initialized")
+				assert.True(t, s.capabilities.tools.listChanged, "listChanged should be true when no capabilities were provided")
+			},
+		},
+		{
+			name: "tools.listChanged set to false",
+			serverOptions: []ServerOption{
+				WithToolCapabilities(false),
+			},
+			validateServer: func(t *testing.T, s *MCPServer, session *sessionTestClientWithTools) {
+				s.capabilitiesMu.RLock()
+				defer s.capabilitiesMu.RUnlock()
+
+				require.NotNil(t, s.capabilities.tools, "tools capability should be initialized")
+				assert.False(t, s.capabilities.tools.listChanged, "listChanged should remain false when explicitly set to false")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := NewMCPServer("test-server", "1.0.0", tt.serverOptions...)
+
+			// Create and register a session
+			session := &sessionTestClientWithTools{
+				sessionID:           "test-session",
+				notificationChannel: make(chan mcp.JSONRPCNotification, 10),
+				initialized:         true,
+			}
+			err := server.RegisterSession(context.Background(), session)
+			require.NoError(t, err)
+
+			// Add a session tool and verify listChanged remains false
+			err = server.AddSessionTool(session.SessionID(), mcp.NewTool("test-tool"), nil)
+			require.NoError(t, err)
+
+			tt.validateServer(t, server, session)
+		})
+	}
+}
+
+func TestMCPServer_ToolNotificationsDisabled(t *testing.T) {
+	// This test verifies that when tool capabilities are disabled, we still
+	// add/delete tools correctly but don't send notifications about it.
+	//
+	// This is important because:
+	// 1. Tools should still work even if notifications are disabled
+	// 2. We shouldn't waste resources sending notifications that won't be used
+	// 3. The client might not be ready to handle tool notifications yet
+
+	// Create a server WITHOUT tool capabilities
+	server := NewMCPServer("test-server", "1.0.0", WithToolCapabilities(false))
+	ctx := context.Background()
+
+	// Create an initialized session
+	sessionChan := make(chan mcp.JSONRPCNotification, 1)
+	session := &sessionTestClientWithTools{
+		sessionID:           "session-1",
+		notificationChannel: sessionChan,
+		initialized:         true,
+	}
+
+	// Register the session
+	err := server.RegisterSession(ctx, session)
+	require.NoError(t, err)
+
+	// Add a tool
+	err = server.AddSessionTools(session.SessionID(),
+		ServerTool{Tool: mcp.NewTool("test-tool")},
+	)
+	require.NoError(t, err)
+
+	// Verify no notification was sent
+	select {
+	case <-sessionChan:
+		t.Error("Expected no notification to be sent when capabilities.tools.listChanged is false")
+	default:
+		// This is the expected case - no notification should be sent
+	}
+
+	// Verify tool was added to session
+	assert.Len(t, session.GetSessionTools(), 1)
+	assert.Contains(t, session.GetSessionTools(), "test-tool")
+
+	// Delete the tool
+	err = server.DeleteSessionTools(session.SessionID(), "test-tool")
+	require.NoError(t, err)
+
+	// Verify no notification was sent
+	select {
+	case <-sessionChan:
+		t.Error("Expected no notification to be sent when capabilities.tools.listChanged is false")
+	default:
+		// This is the expected case - no notification should be sent
+	}
+
+	// Verify tool was deleted from session
+	assert.Len(t, session.GetSessionTools(), 0)
+}
+
+func TestMCPServer_SetLevelNotEnabled(t *testing.T) {
+	// Create server without logging capability
+	server := NewMCPServer("test-server", "1.0.0")
+
+	// Create and initialize a session
+	sessionChan := make(chan mcp.JSONRPCNotification, 10)
+	session := &sessionTestClientWithLogging{
+		sessionID:           "session-1",
+		notificationChannel: sessionChan,
+	}
+	session.Initialize()
+
+	// Register the session
+	err := server.RegisterSession(context.Background(), session)
+	require.NoError(t, err)
+
+	// Try to set logging level when capability is disabled
+	sessionCtx := server.WithContext(context.Background(), session)
+	setRequest := map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "logging/setLevel",
+		"params": map[string]any{
+			"level": mcp.LoggingLevelCritical,
+		},
+	}
+	requestBytes, err := json.Marshal(setRequest)
+	require.NoError(t, err)
+
+	response := server.HandleMessage(sessionCtx, requestBytes)
+	errorResponse, ok := response.(mcp.JSONRPCError)
+	assert.True(t, ok)
+
+	// Verify we get a METHOD_NOT_FOUND error
+	assert.NotNil(t, errorResponse.Error)
+	assert.Equal(t, mcp.METHOD_NOT_FOUND, errorResponse.Error.Code)
+}
+
+func TestMCPServer_SetLevel(t *testing.T) {
+	server := NewMCPServer("test-server", "1.0.0", WithLogging())
+
+	// Create and initicalize a session
+	sessionChan := make(chan mcp.JSONRPCNotification, 10)
+	session := &sessionTestClientWithLogging{
+		sessionID:           "session-1",
+		notificationChannel: sessionChan,
+	}
+	session.Initialize()
+
+	// Check default logging level
+	if session.GetLogLevel() != mcp.LoggingLevelError {
+		t.Errorf("Expected error level, got %v", session.GetLogLevel())
+	}
+
+	// Register the session
+	err := server.RegisterSession(context.Background(), session)
+	require.NoError(t, err)
+
+	// Set Logging level to critical
+	sessionCtx := server.WithContext(context.Background(), session)
+	setRequest := map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "logging/setLevel",
+		"params": map[string]any{
+			"level": mcp.LoggingLevelCritical,
+		},
+	}
+	requestBytes, err := json.Marshal(setRequest)
+	if err != nil {
+		t.Fatalf("Failed to marshal tool request: %v", err)
+	}
+
+	response := server.HandleMessage(sessionCtx, requestBytes)
+	resp, ok := response.(mcp.JSONRPCResponse)
+	assert.True(t, ok)
+
+	_, ok = resp.Result.(mcp.EmptyResult)
+	assert.True(t, ok)
+
+	// Check logging level
+	if session.GetLogLevel() != mcp.LoggingLevelCritical {
+		t.Errorf("Expected critical level, got %v", session.GetLogLevel())
+	}
+}
+
+func TestSessionWithClientInfo_Integration(t *testing.T) {
+	server := NewMCPServer("test-server", "1.0.0")
+
+	session := &sessionTestClientWithClientInfo{
+		sessionID:           "session-1",
+		notificationChannel: make(chan mcp.JSONRPCNotification, 10),
+		initialized:         false,
+	}
+
+	err := server.RegisterSession(context.Background(), session)
+	require.NoError(t, err)
+
+	clientInfo := mcp.Implementation{
+		Name:    "test-client",
+		Version: "1.0.0",
+	}
+
+	initRequest := mcp.InitializeRequest{}
+	initRequest.Params.ClientInfo = clientInfo
+	initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
+	initRequest.Params.Capabilities = mcp.ClientCapabilities{}
+
+	sessionCtx := server.WithContext(context.Background(), session)
+
+	// Retrieve the session from context
+	retrievedSession := ClientSessionFromContext(sessionCtx)
+	require.NotNil(t, retrievedSession, "Session should be available from context")
+	assert.Equal(t, session.SessionID(), retrievedSession.SessionID(), "Session ID should match")
+
+	result, reqErr := server.handleInitialize(sessionCtx, 1, initRequest)
+	require.Nil(t, reqErr)
+	require.NotNil(t, result)
+
+	// Check if the session can be cast to SessionWithClientInfo
+	sessionWithClientInfo, ok := retrievedSession.(SessionWithClientInfo)
+	require.True(t, ok, "Session should implement SessionWithClientInfo")
+
+	assert.True(t, sessionWithClientInfo.Initialized(), "Session should be initialized")
+
+	storedClientInfo := sessionWithClientInfo.GetClientInfo()
+
+	assert.Equal(t, clientInfo.Name, storedClientInfo.Name, "Client name should match")
+	assert.Equal(t, clientInfo.Version, storedClientInfo.Version, "Client version should match")
 }

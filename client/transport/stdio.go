@@ -26,7 +26,7 @@ type Stdio struct {
 	stdin          io.WriteCloser
 	stdout         *bufio.Reader
 	stderr         io.ReadCloser
-	responses      map[int64]chan *JSONRPCResponse
+	responses      map[string]chan *JSONRPCResponse
 	mu             sync.RWMutex
 	done           chan struct{}
 	onNotification func(mcp.JSONRPCNotification)
@@ -42,7 +42,7 @@ func NewIO(input io.Reader, output io.WriteCloser, logging io.ReadCloser) *Stdio
 		stdout: bufio.NewReader(input),
 		stderr: logging,
 
-		responses: make(map[int64]chan *JSONRPCResponse),
+		responses: make(map[string]chan *JSONRPCResponse),
 		done:      make(chan struct{}),
 	}
 }
@@ -61,7 +61,7 @@ func NewStdio(
 		args:    args,
 		env:     env,
 
-		responses: make(map[int64]chan *JSONRPCResponse),
+		responses: make(map[string]chan *JSONRPCResponse),
 		done:      make(chan struct{}),
 	}
 
@@ -148,8 +148,8 @@ func (c *Stdio) Close() error {
 	return nil
 }
 
-// OnNotification registers a handler function to be called when notifications are received.
-// Multiple handlers can be registered and will be called in the order they were added.
+// SetNotificationHandler sets the handler function to be called when a notification is received.
+// Only one handler can be set at a time; setting a new one replaces the previous handler.
 func (c *Stdio) SetNotificationHandler(
 	handler func(notification mcp.JSONRPCNotification),
 ) {
@@ -181,7 +181,7 @@ func (c *Stdio) readResponses() {
 			}
 
 			// Handle notification
-			if baseMessage.ID == nil {
+			if baseMessage.ID.IsNil() {
 				var notification mcp.JSONRPCNotification
 				if err := json.Unmarshal([]byte(line), &notification); err != nil {
 					continue
@@ -194,21 +194,24 @@ func (c *Stdio) readResponses() {
 				continue
 			}
 
+			// Create string key for map lookup
+			idKey := baseMessage.ID.String()
+
 			c.mu.RLock()
-			ch, ok := c.responses[*baseMessage.ID]
+			ch, exists := c.responses[idKey]
 			c.mu.RUnlock()
 
-			if ok {
+			if exists {
 				ch <- &baseMessage
 				c.mu.Lock()
-				delete(c.responses, *baseMessage.ID)
+				delete(c.responses, idKey)
 				c.mu.Unlock()
 			}
 		}
 	}
 }
 
-// sendRequest sends a JSON-RPC request to the server and waits for a response.
+// SendRequest sends a JSON-RPC request to the server and waits for a response.
 // It creates a unique request ID, sends the request over stdin, and waits for
 // the corresponding response or context cancellation.
 // Returns the raw JSON response message or an error if the request fails.
@@ -227,14 +230,17 @@ func (c *Stdio) SendRequest(
 	}
 	requestBytes = append(requestBytes, '\n')
 
+	// Create string key for map lookup
+	idKey := request.ID.String()
+
 	// Register response channel
 	responseChan := make(chan *JSONRPCResponse, 1)
 	c.mu.Lock()
-	c.responses[request.ID] = responseChan
+	c.responses[idKey] = responseChan
 	c.mu.Unlock()
 	deleteResponseChan := func() {
 		c.mu.Lock()
-		delete(c.responses, request.ID)
+		delete(c.responses, idKey)
 		c.mu.Unlock()
 	}
 

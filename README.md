@@ -1,10 +1,10 @@
 <!-- omit in toc -->
-# MCP Go 🚀
-[![Build](https://github.com/wlxwlxwlx/mcp-go/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/wlxwlxwlx/mcp-go/actions/workflows/ci.yml)
-[![Go Report Card](https://goreportcard.com/badge/github.com/wlxwlxwlx/mcp-go?cache)](https://goreportcard.com/report/github.com/wlxwlxwlx/mcp-go)
-[![GoDoc](https://pkg.go.dev/badge/github.com/wlxwlxwlx/mcp-go.svg)](https://pkg.go.dev/github.com/wlxwlxwlx/mcp-go)
-
 <div align="center">
+<img src="./logo.png" alt="MCP Go Logo">
+
+[![Build](https://github.com/mark3labs/mcp-go/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/mark3labs/mcp-go/actions/workflows/ci.yml)
+[![Go Report Card](https://goreportcard.com/badge/github.com/mark3labs/mcp-go?cache)](https://goreportcard.com/report/github.com/mark3labs/mcp-go)
+[![GoDoc](https://pkg.go.dev/badge/github.com/mark3labs/mcp-go.svg)](https://pkg.go.dev/github.com/mark3labs/mcp-go)
 
 <strong>A Go implementation of the Model Context Protocol (MCP), enabling seamless integration between LLM applications and external data sources and tools.</strong>
 
@@ -18,6 +18,7 @@ Discuss the SDK on [Discord](https://discord.gg/RqSS2NQVsY)
 
 </div>
 
+
 ```go
 package main
 
@@ -26,15 +27,16 @@ import (
     "errors"
     "fmt"
 
-    "github.com/wlxwlxwlx/mcp-go/mcp"
-    "github.com/wlxwlxwlx/mcp-go/server"
+    "github.com/mark3labs/mcp-go/mcp"
+    "github.com/mark3labs/mcp-go/server"
 )
 
 func main() {
-    // Create MCP server
+    // Create a new MCP server
     s := server.NewMCPServer(
         "Demo 🚀",
         "1.0.0",
+        server.WithToolCapabilities(false),
     )
 
     // Add tool
@@ -56,9 +58,9 @@ func main() {
 }
 
 func helloHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-    name, ok := request.Params.Arguments["name"].(string)
-    if !ok {
-        return nil, errors.New("name must be a string")
+    name, err := request.RequireString("name")
+    if err != nil {
+        return mcp.NewToolResultError(err.Error()), nil
     }
 
     return mcp.NewToolResultText(fmt.Sprintf("Hello, %s!", name)), nil
@@ -92,19 +94,20 @@ MCP Go handles all the complex protocol details and server management, so you ca
   - [Prompts](#prompts)
 - [Examples](#examples)
 - [Extras](#extras)
+  - [Transports](#transports)
   - [Session Management](#session-management)
+    - [Basic Session Handling](#basic-session-handling)
+    - [Per-Session Tools](#per-session-tools)
+    - [Tool Filtering](#tool-filtering)
+    - [Working with Context](#working-with-context)
   - [Request Hooks](#request-hooks)
   - [Tool Handler Middleware](#tool-handler-middleware)
-- [Contributing](#contributing)
-  - [Prerequisites](#prerequisites)
-  - [Installation](#installation-1)
-  - [Testing](#testing)
-  - [Opening a Pull Request](#opening-a-pull-request)
+  - [Regenerating Server Code](#regenerating-server-code)
 
 ## Installation
 
 ```bash
-go get github.com/wlxwlxwlx/mcp-go
+go get github.com/mark3labs/mcp-go
 ```
 
 ## Quickstart
@@ -116,11 +119,10 @@ package main
 
 import (
     "context"
-    "errors"
     "fmt"
 
-    "github.com/wlxwlxwlx/mcp-go/mcp"
-    "github.com/wlxwlxwlx/mcp-go/server"
+    "github.com/mark3labs/mcp-go/mcp"
+    "github.com/mark3labs/mcp-go/server"
 )
 
 func main() {
@@ -128,8 +130,7 @@ func main() {
     s := server.NewMCPServer(
         "Calculator Demo",
         "1.0.0",
-        server.WithResourceCapabilities(true, true),
-        server.WithLogging(),
+        server.WithToolCapabilities(false),
         server.WithRecovery(),
     )
 
@@ -153,9 +154,21 @@ func main() {
 
     // Add the calculator handler
     s.AddTool(calculatorTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-        op := request.Params.Arguments["operation"].(string)
-        x := request.Params.Arguments["x"].(float64)
-        y := request.Params.Arguments["y"].(float64)
+        // Using helper functions for type-safe argument access
+        op, err := request.RequireString("operation")
+        if err != nil {
+            return mcp.NewToolResultError(err.Error()), nil
+        }
+        
+        x, err := request.RequireFloat("x")
+        if err != nil {
+            return mcp.NewToolResultError(err.Error()), nil
+        }
+        
+        y, err := request.RequireFloat("y")
+        if err != nil {
+            return mcp.NewToolResultError(err.Error()), nil
+        }
 
         var result float64
         switch op {
@@ -181,6 +194,7 @@ func main() {
     }
 }
 ```
+
 ## What is MCP?
 
 The [Model Context Protocol (MCP)](https://modelcontextprotocol.io) lets you build servers that expose data and functionality to LLM applications in a secure, standardized way. Think of it like a web API, but specifically designed for LLM interactions. MCP servers can:
@@ -315,9 +329,10 @@ calculatorTool := mcp.NewTool("calculate",
 )
 
 s.AddTool(calculatorTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-    op := request.Params.Arguments["operation"].(string)
-    x := request.Params.Arguments["x"].(float64)
-    y := request.Params.Arguments["y"].(float64)
+    args := request.GetArguments()
+    op := args["operation"].(string)
+    x := args["x"].(float64)
+    y := args["y"].(float64)
 
     var result float64
     switch op {
@@ -358,10 +373,11 @@ httpTool := mcp.NewTool("http_request",
 )
 
 s.AddTool(httpTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-    method := request.Params.Arguments["method"].(string)
-    url := request.Params.Arguments["url"].(string)
+    args := request.GetArguments()
+    method := args["method"].(string)
+    url := args["url"].(string)
     body := ""
-    if b, ok := request.Params.Arguments["body"].(string); ok {
+    if b, ok := args["body"].(string); ok {
         body = b
     }
 
@@ -458,8 +474,8 @@ s.AddPrompt(mcp.NewPrompt("code_review",
         "Code review assistance",
         []mcp.PromptMessage{
             mcp.NewPromptMessage(
-                mcp.RoleSystem,
-                mcp.NewTextContent("You are a helpful code reviewer. Review the changes and provide constructive feedback."),
+                mcp.RoleUser,
+                mcp.NewTextContent("Review the changes and provide constructive feedback."),
             ),
             mcp.NewPromptMessage(
                 mcp.RoleAssistant,
@@ -489,11 +505,11 @@ s.AddPrompt(mcp.NewPrompt("query_builder",
         "SQL query builder assistance",
         []mcp.PromptMessage{
             mcp.NewPromptMessage(
-                mcp.RoleSystem,
-                mcp.NewTextContent("You are a SQL expert. Help construct efficient and safe queries."),
+                mcp.RoleUser,
+                mcp.NewTextContent("Help construct efficient and safe queries for the provided schema."),
             ),
             mcp.NewPromptMessage(
-                mcp.RoleAssistant,
+                mcp.RoleUser,
                 mcp.NewEmbeddedResource(mcp.ResourceContents{
                     URI: fmt.Sprintf("db://schema/%s", tableName),
                     MIMEType: "application/json",
@@ -516,9 +532,13 @@ Prompts can include:
 
 ## Examples
 
-For examples, see the `examples/` directory.
+For examples, see the [`examples/`](examples/) directory.
 
 ## Extras
+
+### Transports
+
+MCP-Go supports stdio, SSE and streamable-HTTP transport layers.
 
 ### Session Management
 
@@ -745,57 +765,14 @@ Add middleware to tool call handlers using the `server.WithToolHandlerMiddleware
 
 A recovery middleware option is available to recover from panics in a tool call and can be added to the server with the `server.WithRecovery` option.
 
-## Contributing
+### Regenerating Server Code
 
-<details>
-
-<summary><h3>Open Developer Guide</h3></summary>
-
-### Prerequisites
-
-Go version >= 1.23
-
-### Installation
-
-Create a fork of this repository, then clone it:
+Server hooks and request handlers are generated. Regenerate them by running:
 
 ```bash
-git clone https://github.com/wlxwlxwlx/mcp-go.git
-cd mcp-go
+go generate ./...
 ```
 
-### Testing
+You need `go` installed and the `goimports` tool available. The generator runs
+`goimports` automatically to format and fix imports.
 
-Please make sure to test any new functionality. Your tests should be simple and atomic and anticipate change rather than cement complex patterns.
-
-Run tests from the root directory:
-
-```bash
-go test -v './...'
-```
-
-### Opening a Pull Request
-
-Fork the repository and create a new branch:
-
-```bash
-git checkout -b my-branch
-```
-
-Make your changes and commit them:
-
-
-```bash
-git add . && git commit -m "My changes"
-```
-
-Push your changes to your fork:
-
-
-```bash
-git push origin my-branch
-```
-
-Feel free to reach out in a GitHub issue or discussion if you have any questions!
-
-</details>

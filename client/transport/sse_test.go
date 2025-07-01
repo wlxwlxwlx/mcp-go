@@ -64,7 +64,7 @@ func startMockSSEEchoServer() (string, func()) {
 		}
 
 		// Parse incoming JSON-RPC request
-		var request map[string]interface{}
+		var request map[string]any
 		decoder := json.NewDecoder(r.Body)
 		if err := decoder.Decode(&request); err != nil {
 			http.Error(w, fmt.Sprintf("Invalid JSON: %v", err), http.StatusBadRequest)
@@ -72,7 +72,7 @@ func startMockSSEEchoServer() (string, func()) {
 		}
 
 		// Echo back the request as the response result
-		response := map[string]interface{}{
+		response := map[string]any{
 			"jsonrpc": "2.0",
 			"id":      request["id"],
 			"result":  request,
@@ -96,7 +96,7 @@ func startMockSSEEchoServer() (string, func()) {
 			mu.Unlock()
 		case "debug/echo_error_string":
 			data, _ := json.Marshal(request)
-			response["error"] = map[string]interface{}{
+			response["error"] = map[string]any{
 				"code":    -1,
 				"message": string(data),
 			}
@@ -153,14 +153,14 @@ func TestSSE(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
-		params := map[string]interface{}{
+		params := map[string]any{
 			"string": "hello world",
-			"array":  []interface{}{1, 2, 3},
+			"array":  []any{1, 2, 3},
 		}
 
 		request := JSONRPCRequest{
 			JSONRPC: "2.0",
-			ID:      1,
+			ID:      mcp.NewRequestId(int64(1)),
 			Method:  "debug/echo",
 			Params:  params,
 		}
@@ -173,10 +173,10 @@ func TestSSE(t *testing.T) {
 
 		// Parse the result to verify echo
 		var result struct {
-			JSONRPC string                 `json:"jsonrpc"`
-			ID      int64                  `json:"id"`
-			Method  string                 `json:"method"`
-			Params  map[string]interface{} `json:"params"`
+			JSONRPC string         `json:"jsonrpc"`
+			ID      mcp.RequestId  `json:"id"`
+			Method  string         `json:"method"`
+			Params  map[string]any `json:"params"`
 		}
 
 		if err := json.Unmarshal(response.Result, &result); err != nil {
@@ -187,8 +187,11 @@ func TestSSE(t *testing.T) {
 		if result.JSONRPC != "2.0" {
 			t.Errorf("Expected JSONRPC value '2.0', got '%s'", result.JSONRPC)
 		}
-		if result.ID != 1 {
-			t.Errorf("Expected ID 1, got %d", result.ID)
+		idValue, ok := result.ID.Value().(int64)
+		if !ok {
+			t.Errorf("Expected ID to be int64, got %T", result.ID.Value())
+		} else if idValue != 1 {
+			t.Errorf("Expected ID 1, got %d", idValue)
 		}
 		if result.Method != "debug/echo" {
 			t.Errorf("Expected method 'debug/echo', got '%s'", result.Method)
@@ -198,7 +201,7 @@ func TestSSE(t *testing.T) {
 			t.Errorf("Expected string 'hello world', got %v", result.Params["string"])
 		}
 
-		if arr, ok := result.Params["array"].([]interface{}); !ok || len(arr) != 3 {
+		if arr, ok := result.Params["array"].([]any); !ok || len(arr) != 3 {
 			t.Errorf("Expected array with 3 items, got %v", result.Params["array"])
 		}
 	})
@@ -211,7 +214,7 @@ func TestSSE(t *testing.T) {
 		// Prepare a request
 		request := JSONRPCRequest{
 			JSONRPC: "2.0",
-			ID:      3,
+			ID:      mcp.NewRequestId(int64(3)),
 			Method:  "debug/echo",
 		}
 
@@ -244,7 +247,7 @@ func TestSSE(t *testing.T) {
 			Notification: mcp.Notification{
 				Method: "debug/echo_notification",
 				Params: mcp.NotificationParams{
-					AdditionalFields: map[string]interface{}{"test": "value"},
+					AdditionalFields: map[string]any{"test": "value"},
 				},
 			},
 		}
@@ -292,9 +295,9 @@ func TestSSE(t *testing.T) {
 				// Each request has a unique ID and payload
 				request := JSONRPCRequest{
 					JSONRPC: "2.0",
-					ID:      int64(100 + idx),
+					ID:      mcp.NewRequestId(int64(100 + idx)),
 					Method:  "debug/echo",
-					Params: map[string]interface{}{
+					Params: map[string]any{
 						"requestIndex": idx,
 						"timestamp":    time.Now().UnixNano(),
 					},
@@ -317,17 +320,27 @@ func TestSSE(t *testing.T) {
 				continue
 			}
 
-			if responses[i] == nil || responses[i].ID == nil || *responses[i].ID != int64(100+i) {
-				t.Errorf("Request %d: Expected ID %d, got %v", i, 100+i, responses[i])
+			if responses[i] == nil {
+				t.Errorf("Request %d: Response is nil", i)
+				continue
+			}
+
+			expectedId := int64(100 + i)
+			idValue, ok := responses[i].ID.Value().(int64)
+			if !ok {
+				t.Errorf("Request %d: Expected ID to be int64, got %T", i, responses[i].ID.Value())
+				continue
+			} else if idValue != expectedId {
+				t.Errorf("Request %d: Expected ID %d, got %d", i, expectedId, idValue)
 				continue
 			}
 
 			// Parse the result to verify echo
 			var result struct {
-				JSONRPC string                 `json:"jsonrpc"`
-				ID      int64                  `json:"id"`
-				Method  string                 `json:"method"`
-				Params  map[string]interface{} `json:"params"`
+				JSONRPC string         `json:"jsonrpc"`
+				ID      mcp.RequestId  `json:"id"`
+				Method  string         `json:"method"`
+				Params  map[string]any `json:"params"`
 			}
 
 			if err := json.Unmarshal(responses[i].Result, &result); err != nil {
@@ -336,8 +349,11 @@ func TestSSE(t *testing.T) {
 			}
 
 			// Verify data matches what was sent
-			if result.ID != int64(100+i) {
-				t.Errorf("Request %d: Expected echoed ID %d, got %d", i, 100+i, result.ID)
+			idValue, ok = result.ID.Value().(int64)
+			if !ok {
+				t.Errorf("Request %d: Expected ID to be int64, got %T", i, result.ID.Value())
+			} else if idValue != int64(100+i) {
+				t.Errorf("Request %d: Expected echoed ID %d, got %d", i, 100+i, idValue)
 			}
 
 			if result.Method != "debug/echo" {
@@ -356,7 +372,7 @@ func TestSSE(t *testing.T) {
 		// Prepare a request
 		request := JSONRPCRequest{
 			JSONRPC: "2.0",
-			ID:      100,
+			ID:      mcp.NewRequestId(int64(100)),
 			Method:  "debug/echo_error_string",
 		}
 
@@ -378,11 +394,117 @@ func TestSSE(t *testing.T) {
 		if responseError.Method != "debug/echo_error_string" {
 			t.Errorf("Expected method 'debug/echo_error_string', got '%s'", responseError.Method)
 		}
-		if responseError.ID != 100 {
-			t.Errorf("Expected ID 100, got %d", responseError.ID)
+		idValue, ok := responseError.ID.Value().(int64)
+		if !ok {
+			t.Errorf("Expected ID to be int64, got %T", responseError.ID.Value())
+		} else if idValue != 100 {
+			t.Errorf("Expected ID 100, got %d", idValue)
 		}
 		if responseError.JSONRPC != "2.0" {
 			t.Errorf("Expected JSONRPC '2.0', got '%s'", responseError.JSONRPC)
+		}
+	})
+
+	t.Run("SSEEventWithoutEventField", func(t *testing.T) {
+		// Test that SSE events with only data field (no event field) are processed correctly
+		// This tests the fix for issue #369
+		
+		var messageReceived chan struct{}
+		
+		// Create a custom mock server that sends SSE events without event field
+		sseHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			flusher, ok := w.(http.Flusher)
+			if !ok {
+				http.Error(w, "Streaming unsupported", http.StatusInternalServerError)
+				return
+			}
+
+			// Send initial endpoint event
+			fmt.Fprintf(w, "event: endpoint\ndata: %s\n\n", "/message")
+			flusher.Flush()
+
+			// Wait for message to be received, then send response
+			select {
+			case <-messageReceived:
+				// Send response via SSE WITHOUT event field (only data field)
+				// This should be processed as a "message" event according to SSE spec
+				response := map[string]any{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "test response without event field",
+				}
+				responseBytes, _ := json.Marshal(response)
+				fmt.Fprintf(w, "data: %s\n\n", responseBytes)
+				flusher.Flush()
+			case <-r.Context().Done():
+				return
+			}
+
+			// Keep connection open
+			<-r.Context().Done()
+		})
+
+		// Create message handler
+		messageHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusAccepted)
+			
+			// Signal that message was received
+			close(messageReceived)
+		})
+
+		// Initialize the channel
+		messageReceived = make(chan struct{})
+
+		// Create test server
+		mux := http.NewServeMux()
+		mux.Handle("/", sseHandler)
+		mux.Handle("/message", messageHandler)
+		testServer := httptest.NewServer(mux)
+		defer testServer.Close()
+
+		// Create SSE transport
+		trans, err := NewSSE(testServer.URL)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Start the transport
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		err = trans.Start(ctx)
+		if err != nil {
+			t.Fatalf("Failed to start transport: %v", err)
+		}
+		defer trans.Close()
+
+		// Send a request
+		request := JSONRPCRequest{
+			JSONRPC: "2.0",
+			ID:      mcp.NewRequestId(int64(1)),
+			Method:  "test",
+		}
+
+		// This should succeed because the SSE event without event field should be processed
+		response, err := trans.SendRequest(ctx, request)
+		if err != nil {
+			t.Fatalf("SendRequest failed: %v", err)
+		}
+
+		if response == nil {
+			t.Fatal("Expected response, got nil")
+		}
+
+		// Verify the response
+		var result string
+		if err := json.Unmarshal(response.Result, &result); err != nil {
+			t.Fatalf("Failed to unmarshal result: %v", err)
+		}
+
+		if result != "test response without event field" {
+			t.Errorf("Expected 'test response without event field', got '%s'", result)
 		}
 	})
 
@@ -415,6 +537,31 @@ func TestSSEErrors(t *testing.T) {
 		}
 	})
 
+	t.Run("WithHTTPClient", func(t *testing.T) {
+		// Create a custom client with a very short timeout
+		customClient := &http.Client{Timeout: 1 * time.Nanosecond}
+
+		url, closeF := startMockSSEEchoServer()
+		defer closeF()
+		// Initialize SSE transport with the custom HTTP client
+		trans, err := NewSSE(url, WithHTTPClient(customClient))
+		if err != nil {
+			t.Fatalf("Failed to create SSE with custom client: %v", err)
+		}
+
+		// Starting should immediately error due to timeout
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		err = trans.Start(ctx)
+		if err == nil {
+			t.Error("Expected Start to fail with custom timeout, got nil")
+		}
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Errorf("Expected error 'context deadline exceeded', got '%s'", err.Error())
+		}
+		trans.Close()
+	})
+
 	t.Run("RequestBeforeStart", func(t *testing.T) {
 		url, closeF := startMockSSEEchoServer()
 		defer closeF()
@@ -428,7 +575,7 @@ func TestSSEErrors(t *testing.T) {
 		// Prepare a request
 		request := JSONRPCRequest{
 			JSONRPC: "2.0",
-			ID:      99,
+			ID:      mcp.NewRequestId(int64(99)),
 			Method:  "ping",
 		}
 
@@ -467,7 +614,7 @@ func TestSSEErrors(t *testing.T) {
 		// Try to send a request after close
 		request := JSONRPCRequest{
 			JSONRPC: "2.0",
-			ID:      1,
+			ID:      mcp.NewRequestId(int64(1)),
 			Method:  "ping",
 		}
 
