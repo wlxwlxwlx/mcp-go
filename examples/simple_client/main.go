@@ -54,6 +54,11 @@ func main() {
 		// Create client with the transport
 		c = client.NewClient(stdioTransport)
 
+		// Start the client
+		if err := c.Start(ctx); err != nil {
+			log.Fatalf("Failed to start client: %v", err)
+		}
+
 		// Set up logging for stderr if available
 		if stderr, ok := client.GetStderr(c); ok {
 			go func() {
@@ -76,17 +81,18 @@ func main() {
 		fmt.Println("Initializing HTTP client...")
 		// Create HTTP transport
 		httpTransport, err := transport.NewStreamableHTTP(*httpURL)
+		// NOTE: the default streamableHTTP transport is not 100% identical to the stdio client.
+		// By default, it could not receive global notifications (e.g. toolListChanged).
+		// You need to enable the `WithContinuousListening()` option to establish a long-live connection,
+		// and receive the notifications any time the server sends them.
+		//
+		//   httpTransport, err := transport.NewStreamableHTTP(*httpURL, transport.WithContinuousListening())
 		if err != nil {
 			log.Fatalf("Failed to create HTTP transport: %v", err)
 		}
 
 		// Create client with the transport
 		c = client.NewClient(httpTransport)
-	}
-
-	// Start the client
-	if err := c.Start(ctx); err != nil {
-		log.Fatalf("Failed to start client: %v", err)
 	}
 
 	// Set up notification handler
