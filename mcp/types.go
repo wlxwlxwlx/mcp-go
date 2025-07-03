@@ -5,6 +5,7 @@ package mcp
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/wlxwlxwlx/mcp-go/server"
 	"maps"
 	"strconv"
 
@@ -568,7 +569,8 @@ type ListResourceTemplatesResult struct {
 // specific resource URI.
 type ReadResourceRequest struct {
 	Request
-	Params ReadResourceParams `json:"params"`
+	Params  ReadResourceParams `json:"params"`
+	Handler server.ResourceHandlerFunc
 }
 
 type ReadResourceParams struct {

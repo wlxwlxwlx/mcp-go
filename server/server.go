@@ -757,6 +757,18 @@ func (s *MCPServer) handleReadResource(
 	id any,
 	request mcp.ReadResourceRequest,
 ) (*mcp.ReadResourceResult, *requestError) {
+	if request.Handler != nil {
+		handler := request.Handler
+		contents, err := handler(ctx, request)
+		if err != nil {
+			return nil, &requestError{
+				id:   id,
+				code: mcp.INTERNAL_ERROR,
+				err:  err,
+			}
+		}
+		return &mcp.ReadResourceResult{Contents: contents}, nil
+	}
 	s.resourcesMu.RLock()
 	// First try direct resource handlers
 	if entry, ok := s.resources[request.Params.URI]; ok {
