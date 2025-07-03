@@ -576,7 +576,9 @@ type ReadResourceRequest struct {
 type ReadResourceParams struct {
 	// The URI of the resource to read. The URI can use any protocol; it is up
 	// to the server how to interpret it.
-	URI string `json:"uri"`
+	URI      string `json:"uri"`
+	Name     string `json:"name"`
+	MIMEType string `json:"mimeType,omitempty"`
 	// Arguments to pass to the resource handler
 	Arguments map[string]any `json:"arguments,omitempty"`
 }
