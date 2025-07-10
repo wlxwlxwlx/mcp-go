@@ -337,6 +337,13 @@ func (s *MCPServer) AddResources(resources ...ServerResource) {
 	}
 }
 
+func (s *MCPServer) SetResources(resources ...ServerResource) {
+	s.resourcesMu.Lock()
+	s.resources = make(map[string]resourceEntry, len(resources))
+	s.resourcesMu.Unlock()
+	s.AddResources(resources...)
+}
+
 // AddResource registers a new resource and its handler
 func (s *MCPServer) AddResource(
 	resource mcp.Resource,
@@ -356,6 +363,24 @@ func (s *MCPServer) RemoveResource(uri string) {
 
 	// Send notification to all initialized sessions if listChanged capability is enabled and we actually remove a resource
 	if exists && s.capabilities.resources != nil && s.capabilities.resources.listChanged {
+		s.SendNotificationToAllClients(mcp.MethodNotificationResourcesListChanged, nil)
+	}
+}
+
+func (s *MCPServer) DeleteResources(uris ...string) {
+	s.resourcesMu.Lock()
+	var _exists bool
+	for _, uri := range uris {
+		_, exists := s.resources[uri]
+		if exists {
+			_exists = exists
+			delete(s.resources, uri)
+		}
+	}
+	s.resourcesMu.Unlock()
+
+	// Send notification to all initialized sessions if listChanged capability is enabled and we actually remove a resource
+	if _exists && s.capabilities.resources != nil && s.capabilities.resources.listChanged {
 		s.SendNotificationToAllClients(mcp.MethodNotificationResourcesListChanged, nil)
 	}
 }
@@ -402,6 +427,13 @@ func (s *MCPServer) AddPrompts(prompts ...ServerPrompt) {
 // AddPrompt registers a new prompt handler with the given name
 func (s *MCPServer) AddPrompt(prompt mcp.Prompt, handler PromptHandlerFunc) {
 	s.AddPrompts(ServerPrompt{Prompt: prompt, Handler: handler})
+}
+
+func (s *MCPServer) SetPrompts(prompts ...ServerPrompt) {
+	s.promptsMu.Lock()
+	s.prompts = make(map[string]mcp.Prompt, len(prompts))
+	s.promptsMu.Unlock()
+	s.AddPrompts(prompts...)
 }
 
 // DeletePrompts removes prompts from the server
