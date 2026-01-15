@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"reflect"
 	"strconv"
 )
@@ -14,6 +15,7 @@ var errToolSchemaConflict = errors.New("provide either InputSchema or RawInputSc
 // server has.
 type ListToolsRequest struct {
 	PaginatedRequest
+	Header http.Header `json:"-"`
 }
 
 // ListToolsResult is the server's response to a tools/list request from the
@@ -45,6 +47,7 @@ type CallToolResult struct {
 // CallToolRequest is used by the client to invoke a tool provided by the server.
 type CallToolRequest struct {
 	Request
+	Header http.Header    `json:"-"` // HTTP headers from the original request
 	Params CallToolParams `json:"params"`
 }
 
@@ -459,6 +462,72 @@ func (r CallToolRequest) RequireBoolSlice(key string) ([]bool, error) {
 		}
 	}
 	return nil, fmt.Errorf("required argument %q not found", key)
+}
+
+// MarshalJSON implements custom JSON marshaling for CallToolResult
+func (r CallToolResult) MarshalJSON() ([]byte, error) {
+	m := make(map[string]any)
+
+	// Marshal Meta if present
+	if r.Meta != nil {
+		m["_meta"] = r.Meta
+	}
+
+	// Marshal Content array
+	content := make([]any, len(r.Content))
+	for i, c := range r.Content {
+		content[i] = c
+	}
+	m["content"] = content
+
+	// Marshal IsError if true
+	if r.IsError {
+		m["isError"] = r.IsError
+	}
+
+	return json.Marshal(m)
+}
+
+// UnmarshalJSON implements custom JSON unmarshaling for CallToolResult
+func (r *CallToolResult) UnmarshalJSON(data []byte) error {
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	// Unmarshal Meta
+	if meta, ok := raw["_meta"]; ok {
+		if metaMap, ok := meta.(map[string]any); ok {
+			r.Meta = metaMap
+		}
+	}
+
+	// Unmarshal Content array
+	if contentRaw, ok := raw["content"]; ok {
+		if contentArray, ok := contentRaw.([]any); ok {
+			r.Content = make([]Content, len(contentArray))
+			for i, item := range contentArray {
+				itemBytes, err := json.Marshal(item)
+				if err != nil {
+					return err
+				}
+				content, err := UnmarshalContent(itemBytes)
+				if err != nil {
+					return err
+				}
+				r.Content[i] = content
+			}
+		}
+	}
+
+	// Unmarshal IsError
+	if isError, ok := raw["isError"]; ok {
+		if isErrorBool, ok := isError.(bool); ok {
+			r.IsError = isErrorBool
+		}
+	}
+
+	return nil
 }
 
 // ToolListChangedNotification is an optional notification from the server to

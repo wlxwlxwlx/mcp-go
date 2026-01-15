@@ -317,6 +317,11 @@ func NewMCPServer(
 	return s
 }
 
+// GenerateInProcessSessionID generates a unique session ID for inprocess clients
+func (s *MCPServer) GenerateInProcessSessionID() string {
+	return GenerateInProcessSessionID()
+}
+
 // AddResources registers multiple resources at once
 func (s *MCPServer) AddResources(resources ...ServerResource) {
 	s.implicitlyRegisterResourceCapabilities()
@@ -1108,4 +1113,30 @@ func createErrorResponse(
 			Message: message,
 		},
 	}
+}
+func (s *MCPServer) HasTool(name string) bool {
+	for _name, _ := range s.tools {
+		if _name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *MCPServer) HasResource(name string) bool {
+	for _name, _ := range s.resources {
+		if _name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *MCPServer) HasPrompt(name string) bool {
+	for _name, _ := range s.prompts {
+		if _name == name {
+			return true
+		}
+	}
+	return false
 }

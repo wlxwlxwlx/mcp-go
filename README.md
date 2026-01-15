@@ -24,7 +24,6 @@ package main
 
 import (
     "context"
-    "errors"
     "fmt"
 
     "github.com/wlxwlxwlx/mcp-go/mcp"

@@ -283,8 +283,8 @@ func TestStreamableHTTP_POST_SendAndReceive(t *testing.T) {
 		}
 		defer resp.Body.Close()
 
-		if resp.StatusCode != http.StatusAccepted {
-			t.Errorf("Expected status 202, got %d", resp.StatusCode)
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("Expected status 200, got %d", resp.StatusCode)
 		}
 		if resp.Header.Get("content-type") != "text/event-stream" {
 			t.Errorf("Expected content-type text/event-stream, got %s", resp.Header.Get("content-type"))
@@ -725,6 +725,74 @@ func TestStreamableHTTP_SessionWithTools(t *testing.T) {
 	})
 }
 
+func TestStreamableHTTP_SessionWithLogging(t *testing.T) {
+	t.Run("SessionWithLogging implementation", func(t *testing.T) {
+		hooks := &Hooks{}
+		var logSession *streamableHttpSession
+		var mu sync.Mutex
+
+		hooks.AddAfterSetLevel(func(ctx context.Context, id any, message *mcp.SetLevelRequest, result *mcp.EmptyResult) {
+			if s, ok := ClientSessionFromContext(ctx).(*streamableHttpSession); ok {
+				mu.Lock()
+				logSession = s
+				mu.Unlock()
+			}
+		})
+
+		mcpServer := NewMCPServer("test", "1.0.0", WithHooks(hooks), WithLogging())
+		testServer := NewTestStreamableHTTPServer(mcpServer)
+		defer testServer.Close()
+
+		// obtain a valid session ID first
+		initResp, err := postJSON(testServer.URL, initRequest)
+		if err != nil {
+			t.Fatalf("Failed to send init request: %v", err)
+		}
+		defer initResp.Body.Close()
+		sessionID := initResp.Header.Get(headerKeySessionID)
+		if sessionID == "" {
+			t.Fatal("Expected session id in header")
+		}
+
+		setLevelRequest := map[string]any{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"method":  "logging/setLevel",
+			"params": map[string]any{
+				"level": mcp.LoggingLevelCritical,
+			},
+		}
+
+		reqBody, _ := json.Marshal(setLevelRequest)
+		req, err := http.NewRequest(http.MethodPost, testServer.URL, bytes.NewBuffer(reqBody))
+		if err != nil {
+			t.Fatalf("Failed to create request: %v", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set(headerKeySessionID, sessionID)
+
+		resp, err := testServer.Client().Do(req)
+		if err != nil {
+			t.Fatalf("Failed to send message: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("Expected status 200, got %d", resp.StatusCode)
+		}
+
+		mu.Lock()
+		if logSession == nil {
+			mu.Unlock()
+			t.Fatal("Session was not captured")
+		}
+		if logSession.GetLogLevel() != mcp.LoggingLevelCritical {
+			t.Errorf("Expected critical level, got %v", logSession.GetLogLevel())
+		}
+		mu.Unlock()
+	})
+}
+
 func TestStreamableHTTPServer_WithOptions(t *testing.T) {
 	t.Run("WithStreamableHTTPServer sets httpServer field", func(t *testing.T) {
 		mcpServer := NewMCPServer("test", "1.0.0")
@@ -773,6 +841,59 @@ func TestStreamableHTTPServer_WithOptions(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestStreamableHTTP_HeaderPassthrough(t *testing.T) {
+	mcpServer := NewMCPServer("test-mcp-server", "1.0")
+
+	var receivedHeaders struct {
+		contentType  string
+		customHeader string
+	}
+	mcpServer.AddTool(
+		mcp.NewTool("check-headers"),
+		func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			receivedHeaders.contentType = request.Header.Get("Content-Type")
+			receivedHeaders.customHeader = request.Header.Get("X-Custom-Header")
+			return mcp.NewToolResultText("ok"), nil
+		},
+	)
+
+	server := NewTestStreamableHTTPServer(mcpServer)
+	defer server.Close()
+
+	// Initialize to get session
+	resp, _ := postJSON(server.URL, initRequest)
+	sessionID := resp.Header.Get(headerKeySessionID)
+	resp.Body.Close()
+
+	// Test header passthrough
+	toolRequest := map[string]any{
+		"jsonrpc": "2.0",
+		"id":      2,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name": "check-headers",
+		},
+	}
+	toolBody, _ := json.Marshal(toolRequest)
+	req, _ := http.NewRequest("POST", server.URL, bytes.NewReader(toolBody))
+
+	const expectedContentType = "application/json"
+	const expectedCustomHeader = "test-value"
+	req.Header.Set("Content-Type", expectedContentType)
+	req.Header.Set("X-Custom-Header", expectedCustomHeader)
+	req.Header.Set(headerKeySessionID, sessionID)
+
+	resp, _ = server.Client().Do(req)
+	resp.Body.Close()
+
+	if receivedHeaders.contentType != expectedContentType {
+		t.Errorf("Expected Content-Type header '%s', got '%s'", expectedContentType, receivedHeaders.contentType)
+	}
+	if receivedHeaders.customHeader != expectedCustomHeader {
+		t.Errorf("Expected X-Custom-Header '%s', got '%s'", expectedCustomHeader, receivedHeaders.customHeader)
+	}
 }
 
 func postJSON(url string, bodyObject any) (*http.Response, error) {

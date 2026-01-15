@@ -74,6 +74,13 @@ func WithLogger(logger util.Logger) StreamableHTTPCOption {
 	}
 }
 
+// WithSession creates a client with a pre-configured session
+func WithSession(sessionID string) StreamableHTTPCOption {
+	return func(sc *StreamableHTTP) {
+		sc.sessionID.Store(sessionID)
+	}
+}
+
 // StreamableHTTP implements Streamable HTTP transport.
 //
 // It transmits JSON-RPC messages over individual HTTP requests. One message per request.
@@ -107,6 +114,7 @@ type StreamableHTTP struct {
 
 	// OAuth support
 	oauthHandler *OAuthHandler
+	wg           sync.WaitGroup
 }
 
 // NewStreamableHTTP creates a new Streamable HTTP transport with the given server URL.
@@ -175,9 +183,10 @@ func (c *StreamableHTTP) Close() error {
 	sessionId := c.sessionID.Load().(string)
 	if sessionId != "" {
 		c.sessionID.Store("")
-
+		c.wg.Add(1)
 		// notify server session closed
 		go func() {
+			defer c.wg.Done()
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			req, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.serverURL.String(), nil)
@@ -194,7 +203,7 @@ func (c *StreamableHTTP) Close() error {
 			res.Body.Close()
 		}()
 	}
-
+	c.wg.Wait()
 	return nil
 }
 
@@ -224,7 +233,6 @@ func (c *StreamableHTTP) SendRequest(
 	ctx context.Context,
 	request JSONRPCRequest,
 ) (*JSONRPCResponse, error) {
-
 	// Marshal request
 	requestBody, err := json.Marshal(request)
 	if err != nil {
@@ -236,13 +244,20 @@ func (c *StreamableHTTP) SendRequest(
 
 	resp, err := c.sendHTTP(ctx, http.MethodPost, bytes.NewReader(requestBody), "application/json, text/event-stream")
 	if err != nil {
-		if errors.Is(err, errSessionTerminated) && request.Method == string(mcp.MethodInitialize) {
+		if errors.Is(err, ErrSessionTerminated) && request.Method == string(mcp.MethodInitialize) {
 			// If the request is initialize, should not return a SessionTerminated error
 			// It should be a genuine endpoint-routing issue.
 			// ( Fall through to return StatusCode checking. )
 		} else {
 			return nil, fmt.Errorf("failed to send request: %w", err)
 		}
+	}
+
+	// Only proceed if we have a valid response.
+	// When sendHTTP fails and resp is nil but method is mcp.MethodInitialize
+	// defer resp.Body.Close() fails with nil pointer dereference.
+	if resp == nil {
+		return nil, fmt.Errorf("failed to send request: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -309,7 +324,6 @@ func (c *StreamableHTTP) sendHTTP(
 	body io.Reader,
 	acceptType string,
 ) (resp *http.Response, err error) {
-
 	// Create HTTP request
 	req, err := http.NewRequestWithContext(ctx, method, c.serverURL.String(), body)
 	if err != nil {
@@ -357,7 +371,7 @@ func (c *StreamableHTTP) sendHTTP(
 	// universal handling for session terminated
 	if resp.StatusCode == http.StatusNotFound {
 		c.sessionID.CompareAndSwap(sessionID, "")
-		return nil, errSessionTerminated
+		return nil, ErrSessionTerminated
 	}
 
 	return resp, nil
@@ -367,7 +381,6 @@ func (c *StreamableHTTP) sendHTTP(
 // It returns the final result for the request once received, or an error.
 // If ignoreResponse is true, it won't return when a response messge is received. This is for continuous listening.
 func (c *StreamableHTTP) handleSSEResponse(ctx context.Context, reader io.ReadCloser, ignoreResponse bool) (*JSONRPCResponse, error) {
-
 	// Create a channel for this specific request
 	responseChan := make(chan *JSONRPCResponse, 1)
 
@@ -380,7 +393,6 @@ func (c *StreamableHTTP) handleSSEResponse(ctx context.Context, reader io.ReadCl
 		defer close(responseChan)
 
 		c.readSSE(ctx, reader, func(event, data string) {
-
 			// (unsupported: batching)
 
 			var message JSONRPCResponse
@@ -483,7 +495,6 @@ func (c *StreamableHTTP) readSSE(ctx context.Context, reader io.ReadCloser, hand
 }
 
 func (c *StreamableHTTP) SendNotification(ctx context.Context, notification mcp.JSONRPCNotification) error {
-
 	// Marshal request
 	requestBody, err := json.Marshal(notification)
 	if err != nil {
@@ -543,7 +554,7 @@ func (c *StreamableHTTP) listenForever(ctx context.Context) {
 	c.logger.Infof("listening to server forever")
 	for {
 		err := c.createGETConnectionToServer(ctx)
-		if errors.Is(err, errGetMethodNotAllowed) {
+		if errors.Is(err, ErrGetMethodNotAllowed) {
 			// server does not support listening
 			c.logger.Errorf("server does not support listening")
 			return
@@ -563,14 +574,13 @@ func (c *StreamableHTTP) listenForever(ctx context.Context) {
 }
 
 var (
-	errSessionTerminated   = fmt.Errorf("session terminated (404). need to re-initialize")
-	errGetMethodNotAllowed = fmt.Errorf("GET method not allowed")
+	ErrSessionTerminated   = fmt.Errorf("session terminated (404). need to re-initialize")
+	ErrGetMethodNotAllowed = fmt.Errorf("GET method not allowed")
 
 	retryInterval = 1 * time.Second // a variable is convenient for testing
 )
 
 func (c *StreamableHTTP) createGETConnectionToServer(ctx context.Context) error {
-
 	resp, err := c.sendHTTP(ctx, http.MethodGet, nil, "text/event-stream")
 	if err != nil {
 		return fmt.Errorf("failed to send request: %w", err)
@@ -579,7 +589,7 @@ func (c *StreamableHTTP) createGETConnectionToServer(ctx context.Context) error 
 
 	// Check if we got an error response
 	if resp.StatusCode == http.StatusMethodNotAllowed {
-		return errGetMethodNotAllowed
+		return ErrGetMethodNotAllowed
 	}
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
